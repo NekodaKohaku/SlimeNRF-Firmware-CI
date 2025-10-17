@@ -1,0 +1,82 @@
+name: Public SlimeNRF Firmware Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "選擇開發板 (例如 xiao_ble/nrf52840)"
+        required: true
+        type: string
+      filename:
+        description: "輸出檔案名稱 (例如 SlimeNRF_Tracker_XIAO)"
+        required: true
+        type: string
+      clk:
+        description: "外部時鐘 (enabled/disabled)"
+        required: false
+        default: "enabled"
+      sleep:
+        description: "睡眠模式 (enabled/disabled)"
+        required: false
+        default: "enabled"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 💻 Checkout repo
+        uses: actions/checkout@v5
+
+      - name: 🧰 Install dependencies
+        run: |
+          sudo apt-get update && sudo apt install -y git cmake ninja-build gperf dfu-util \
+            python3-pip python3-setuptools python3-wheel wget xz-utils
+          pip3 install west
+
+      - name: 🪁 Install Zephyr SDK
+        run: |
+          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
+          ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
+
+      - name: ♻️ Initialize workspace
+        run: |
+          west init -l .
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: 🔨 Build firmware
+        run: |
+          mkdir -p build
+          west build --board ${{ github.event.inputs.board }} SlimeVR-Tracker-nRF \
+            --build-dir build -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+
+      - name: 🗓️ Generate unique tag and metadata
+        id: meta
+        run: |
+          tag="build-$(date -u +'%Y%m%d-%H%M%S')"
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
+      - name: 🚀 Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "Firmware ${{ steps.meta.outputs.tag }}"
+          body: |
+            **SlimeNRF Firmware Build**
+            - 🧭 Build Time: ${{ steps.meta.outputs.date }}
+            - 🧩 Board: `${{ github.event.inputs.board }}`
+            - ⏱️ Clock: `${{ github.event.inputs.clk }}`
+            - 🌙 Sleep: `${{ github.event.inputs.sleep }}`
+            - 📦 File: `${{ github.event.inputs.filename }}.hex`
+            ---
+            🔗 Download your firmware from this release.
+          files: build/zephyr/zephyr.hex
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

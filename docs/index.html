@@ -3,171 +3,61 @@
 <head>
   <meta charset="UTF-8">
   <title>SlimeNRF Firmware Builder</title>
+  <script src="lang.js"></script>
   <style>
-    body {
-      font-family: sans-serif;
-      margin: 2em;
-      background: #f5f5f5;
-    }
-    .card {
-      background: white;
-      padding: 2em;
-      border-radius: 1em;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-      max-width: 500px;
-      margin: auto;
-    }
-    h1 {
-      text-align: center;
-    }
-    label {
-      display: block;
-      margin-top: 1em;
-    }
-    select, input, button {
-      width: 100%;
-      padding: 0.5em;
-      margin-top: 0.5em;
-    }
-    button {
-      margin-top: 1.5em;
-      font-size: 1.1em;
-      cursor: pointer;
-    }
-    #status {
-      margin-top: 1em;
-      text-align: center;
-      font-weight: bold;
-    }
+    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; }
+    label { display: block; margin-top: 10px; }
+    select, input, button { width: 100%; padding: 8px; margin-top: 5px; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1 id="title"></h1>
+  <h1 id="title"></h1>
 
-    <label for="lang" id="langLabel"></label>
-    <select id="lang">
-      <option value="zh">繁體中文</option>
-      <option value="en">English</option>
-      <option value="ja">日本語</option>
-    </select>
+  <label id="lbl-board"></label>
+  <input id="board" placeholder="xiao_ble/nrf52840">
 
-    <label id="boardLabel" for="board"></label>
-    <input id="board" placeholder="xiao_ble/nrf52840">
+  <label id="lbl-filename"></label>
+  <input id="filename" placeholder="SlimeNRF_Tracker_XIAO">
 
-    <label id="filenameLabel" for="filename"></label>
-    <input id="filename" placeholder="SlimeNRF_Tracker_XIAO">
+  <label id="lbl-clk"></label>
+  <select id="clk">
+    <option value="enabled">enabled</option>
+    <option value="disabled">disabled</option>
+  </select>
 
-    <label id="clkLabel" for="clk"></label>
-    <select id="clk">
-      <option value="enabled">enabled</option>
-      <option value="disabled">disabled</option>
-    </select>
+  <label id="lbl-sleep"></label>
+  <select id="sleep">
+    <option value="enabled">enabled</option>
+    <option value="disabled">disabled</option>
+  </select>
 
-    <label id="sleepLabel" for="sleep"></label>
-    <select id="sleep">
-      <option value="enabled">enabled</option>
-      <option value="disabled">disabled</option>
-    </select>
-
-    <button id="buildBtn"></button>
-    <p id="status"></p>
-  </div>
+  <button id="btn-build"></button>
+  <p id="status"></p>
 
   <script>
-    // --- 多語字典 ---
-    const t = {
-      zh: {
-        title: "SlimeNRF 固件生成器",
-        lang: "語言",
-        board: "開發板",
-        filename: "輸出檔名",
-        clk: "外部時鐘",
-        sleep: "睡眠模式",
-        buildBtn: "生成固件",
-        success: "✅ 已觸發構建！請稍等幾分鐘後查看 Releases。",
-        fail: "❌ 觸發失敗：",
-        running: "🚀 正在觸發雲端構建…"
-      },
-      en: {
-        title: "SlimeNRF Firmware Builder",
-        lang: "Language",
-        board: "Board",
-        filename: "Output filename",
-        clk: "External clock",
-        sleep: "Sleep mode",
-        buildBtn: "Build Firmware",
-        success: "✅ Build triggered! Check Releases in a few minutes.",
-        fail: "❌ Build failed: ",
-        running: "🚀 Triggering build on cloud…"
-      },
-      ja: {
-        title: "SlimeNRF ファームウェアビルダー",
-        lang: "言語",
-        board: "ボード",
-        filename: "出力ファイル名",
-        clk: "外部クロック",
-        sleep: "スリープモード",
-        buildBtn: "ファームウェアを生成",
-        success: "✅ ビルドが開始されました。数分後にReleasesを確認してください。",
-        fail: "❌ 失敗しました：",
-        running: "🚀 クラウドでビルドを起動中…"
-      }
-    };
+  const api = "https://api.github.com/repos/NekodaKohaku/SlimeNRF-Firmware-CI/actions/workflows/proxy_dispatch.yml/dispatches";
 
-    // --- 自動選語言 ---
-    const browserLang = navigator.language.startsWith('ja') ? 'ja'
-      : navigator.language.startsWith('en') ? 'en'
-      : 'zh';
+  function triggerBuild() {
+    const board = document.getElementById("board").value;
+    const filename = document.getElementById("filename").value;
+    const clk = document.getElementById("clk").value;
+    const sleep = document.getElementById("sleep").value;
+    const status = document.getElementById("status");
+    status.textContent = t("building");
 
-    const langSelect = document.getElementById('lang');
-    langSelect.value = browserLang;
+    fetch(api, {
+      method: "POST",
+      headers: { "Accept": "application/vnd.github+json" },
+      body: JSON.stringify({ ref: "main", inputs: { board, filename, clk, sleep } })
+    })
+    .then(r => r.ok ? status.textContent = t("success")
+                    : status.textContent = t("failed") + " " + r.statusText);
+  }
 
-    function updateLang(lang) {
-      const L = t[lang];
-      document.getElementById('title').innerText = L.title;
-      document.getElementById('langLabel').innerText = L.lang;
-      document.getElementById('boardLabel').innerText = L.board;
-      document.getElementById('filenameLabel').innerText = L.filename;
-      document.getElementById('clkLabel').innerText = L.clk;
-      document.getElementById('sleepLabel').innerText = L.sleep;
-      document.getElementById('buildBtn').innerText = L.buildBtn;
-    }
-    updateLang(langSelect.value);
-    langSelect.addEventListener('change', e => updateLang(e.target.value));
-
-    // --- Workflow 觸發 ---
-    async function triggerBuild() {
-      const lang = langSelect.value;
-      const L = t[lang];
-      const board = document.getElementById('board').value;
-      const filename = document.getElementById('filename').value;
-      const clk = document.getElementById('clk').value;
-      const sleep = document.getElementById('sleep').value;
-      const status = document.getElementById('status');
-
-      status.innerText = L.running;
-
-      const res = await fetch("https://api.github.com/repos/NekodaKohaku/SlimeNRF-Firmware-CI/actions/workflows/proxy_dispatch.yml/dispatches", {
-        method: "POST",
-        headers: {
-          "Accept": "application/vnd.github+json"
-        },
-        body: JSON.stringify({
-          ref: "main",
-          inputs: { board, filename, clk, sleep }
-        })
-      });
-
-      if (res.ok) {
-        status.innerText = L.success;
-      } else {
-        const text = await res.text();
-        status.innerText = L.fail + text;
-      }
-    }
-
-    document.getElementById("buildBtn").addEventListener("click", triggerBuild);
+  const userLang = navigator.language.startsWith("ja") ? "ja" :
+                   navigator.language.startsWith("zh") ? "zh" : "en";
+  setLanguage(userLang);
+  document.getElementById("btn-build").onclick = triggerBuild;
   </script>
 </body>
 </html>

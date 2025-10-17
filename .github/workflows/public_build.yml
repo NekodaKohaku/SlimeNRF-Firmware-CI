@@ -1,82 +1,105 @@
-name: Public SlimeNRF Firmware Builder
+name: Public Firmware Builder
 
 on:
   workflow_dispatch:
     inputs:
       board:
-        description: "選擇開發板 (例如 xiao_ble/nrf52840)"
+        description: "Target board path (e.g. promicro_uf2/nrf52840/i2c)"
         required: true
         type: string
       filename:
-        description: "輸出檔案名稱 (例如 SlimeNRF_Tracker_XIAO)"
+        description: "Output filename"
         required: true
         type: string
       clk:
-        description: "外部時鐘 (enabled/disabled)"
+        description: "Clock enable/disable"
         required: false
         default: "enabled"
+        type: string
       sleep:
-        description: "睡眠模式 (enabled/disabled)"
+        description: "Sleep mode enable/disable"
         required: false
         default: "enabled"
-
-permissions:
-  contents: write
+        type: string
+      sw0:
+        description: "SW0 enable/disable"
+        required: false
+        default: "enabled"
+        type: string
+      magnetometer:
+        description: "Magnetometer enable/disable"
+        required: false
+        default: "enabled"
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 💻 Checkout repo
-        uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: 🧰 Install dependencies
+      - name: Setup Zephyr build environment
         run: |
-          sudo apt-get update && sudo apt install -y git cmake ninja-build gperf dfu-util \
-            python3-pip python3-setuptools python3-wheel wget xz-utils
-          pip3 install west
-
-      - name: 🪁 Install Zephyr SDK
-        run: |
-          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
-          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
-          ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
-
-      - name: ♻️ Initialize workspace
-        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build gperf cmake python3-pip
+          pip install west
           west init -l .
-          west update --narrow -o=--depth=1
-          west zephyr-export
+          west update
 
-      - name: 🔨 Build firmware
+      - name: Apply dynamic configuration
         run: |
-          mkdir -p build
-          west build --board ${{ github.event.inputs.board }} SlimeVR-Tracker-nRF \
-            --build-dir build -- \
-            -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+          echo "🔧 Applying build options..."
+          echo "Board: ${{ github.event.inputs.board }}"
+          echo "Clock: ${{ github.event.inputs.clk }}"
+          echo "Sleep: ${{ github.event.inputs.sleep }}"
+          echo "SW0: ${{ github.event.inputs.sw0 }}"
+          echo "Magnetometer: ${{ github.event.inputs.magnetometer }}"
 
-      - name: 🗓️ Generate unique tag and metadata
-        id: meta
+          DTS_PATH="boards/nordic/${{ github.event.inputs.board }}.dts"
+          echo "Target DTS: $DTS_PATH"
+
+          if [ -f "$DTS_PATH" ]; then
+            echo "Modifying $DTS_PATH ..."
+
+            # Disable external clock if requested
+            if [ "${{ github.event.inputs.clk }}" = "disabled" ]; then
+              sed -i 's/clk-gpios = <[^>]*>;/\/\/ clk disabled/g' "$DTS_PATH"
+            fi
+
+            # Disable SW0 if requested
+            if [ "${{ github.event.inputs.sw0 }}" = "disabled" ]; then
+              sed -i 's/aliases {[^}]*sw0[^}]*};/\/\/ sw0 disabled/g' "$DTS_PATH"
+            fi
+
+            # Disable magnetometer node
+            if [ "${{ github.event.inputs.magnetometer }}" = "disabled" ]; then
+              sed -i 's/mag: mag@0 {[^}]*};/\/\/ magnetometer disabled/g' "$DTS_PATH"
+            fi
+          else
+            echo "⚠️ DTS file not found: $DTS_PATH"
+          fi
+
+      - name: Build firmware
         run: |
-          tag="build-$(date -u +'%Y%m%d-%H%M%S')"
-          echo "tag=$tag" >> $GITHUB_OUTPUT
-          echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+          echo "🚧 Building firmware..."
+          west build -b ${{ github.event.inputs.board }} app -- -DOUTPUT_NAME=${{ github.event.inputs.filename }}
 
-      - name: 🚀 Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Package firmware
+        run: |
+          mkdir -p output
+          if [ -f build/zephyr/zephyr.uf2 ]; then
+            cp build/zephyr/zephyr.uf2 output/${{ github.event.inputs.filename }}
+          elif [ -f build/zephyr/zephyr.hex ]; then
+            cp build/zephyr/zephyr.hex output/${{ github.event.inputs.filename }}
+          else
+            echo "❌ No output file found in build/zephyr/"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: "Firmware ${{ steps.meta.outputs.tag }}"
-          body: |
-            **SlimeNRF Firmware Build**
-            - 🧭 Build Time: ${{ steps.meta.outputs.date }}
-            - 🧩 Board: `${{ github.event.inputs.board }}`
-            - ⏱️ Clock: `${{ github.event.inputs.clk }}`
-            - 🌙 Sleep: `${{ github.event.inputs.sleep }}`
-            - 📦 File: `${{ github.event.inputs.filename }}.hex`
-            ---
-            🔗 Download your firmware from this release.
-          files: build/zephyr/zephyr.hex
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: ${{ github.event.inputs.filename }}
+          path: output/${{ github.event.inputs.filename }}

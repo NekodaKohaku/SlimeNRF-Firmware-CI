@@ -2,20 +2,23 @@ name: Cleanup old releases
 
 on:
   schedule:
-    - cron: "0 3 * * 0"
+    - cron: "0 */6 * * *"   # 每 6 小時執行一次
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: 🧹 Delete older releases (keep last 20)
-        uses: dev-drprasad/delete-older-releases@v0.3.4
-        with:
-          keep_latest: 20
-          delete_tags: true
+      - name: Delete old releases
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          releases=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/releases | jq -r '.[].tag_name')
+          for tag in $releases; do
+            if [ "$tag" != "latest" ]; then
+              echo "Deleting old release: $tag"
+              curl -X DELETE -H "Authorization: token $GH_TOKEN" \
+                https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag
+            fi
+          done

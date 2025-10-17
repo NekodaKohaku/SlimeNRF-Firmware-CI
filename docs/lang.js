@@ -12,7 +12,10 @@ const LANGS = {
     building: "🚀 正在觸發構建中…",
     success: "✅ 構建已啟動，請稍候查看 Release！",
     failed: "❌ 觸發失敗",
-    selectBoard: "請先選擇開發板"
+    selectBoard: "請先選擇開發板",
+    loginStart: "🔐 正在登入 GitHub…",
+    loginSuccess: "✅ 登入成功，正在觸發構建…",
+    loginFail: "❌ 登入失敗："
   },
   en: {
     title: "SlimeNRF Firmware Builder",
@@ -27,7 +30,10 @@ const LANGS = {
     building: "🚀 Triggering build...",
     success: "✅ Build started! Check Releases soon.",
     failed: "❌ Build trigger failed",
-    selectBoard: "Please select a board first"
+    selectBoard: "Please select a board first",
+    loginStart: "🔐 Logging in to GitHub…",
+    loginSuccess: "✅ Login successful. Triggering build…",
+    loginFail: "❌ Login failed:"
   },
   ja: {
     title: "SlimeNRF ファームウェアビルダー",
@@ -42,7 +48,10 @@ const LANGS = {
     building: "🚀 ビルドを開始中…",
     success: "✅ ビルドが開始されました。数分後にReleasesを確認してください。",
     failed: "❌ ビルドの起動に失敗",
-    selectBoard: "ボードを選択してください"
+    selectBoard: "ボードを選択してください",
+    loginStart: "🔐 GitHub にログイン中…",
+    loginSuccess: "✅ ログインに成功しました。ビルドを開始します…",
+    loginFail: "❌ ログインに失敗："
   }
 };
 

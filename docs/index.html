@@ -201,12 +201,12 @@ document.getElementById("btn-build").onclick = async function triggerBuild() {
 
   // Check login
   if (!accessToken) {
-    status.textContent = "🔐 Logging in to GitHub…";
+    status.textContent = t.loginStart;
     try {
       await githubLogin();
-      status.textContent = "✅ Login successful. Triggering build…";
+      status.textContent = t.loginSuccess;
     } catch (e) {
-      status.textContent = "❌ Login failed: " + e.message;
+      status.textContent = t.loginFail + " " + e.message;
       return;
     }
   }

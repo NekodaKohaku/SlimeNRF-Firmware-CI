@@ -5,19 +5,41 @@
   <title>SlimeNRF Firmware Builder</title>
   <script src="lang.js"></script>
   <style>
-    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; }
+    body { font-family: sans-serif; max-width: 650px; margin: 40px auto; background:#fafafa; }
     label { display: block; margin-top: 10px; }
-    select, input, button { width: 100%; padding: 8px; margin-top: 5px; }
+    select, input, button { width: 100%; padding: 8px; margin-top: 5px; border-radius:6px; border:1px solid #ccc; }
+    button { background:#4CAF50; color:white; border:none; font-size:16px; cursor:pointer; margin-top:10px; }
+    button:hover { background:#45a049; }
+    #status { font-weight:bold; margin-top:10px; }
+    .lang-switch { float:right; margin-bottom:10px; }
   </style>
 </head>
 <body>
+  <div class="lang-switch">
+    <select id="langSelect">
+      <option value="auto">🌐 Auto</option>
+      <option value="zh">繁體中文</option>
+      <option value="en">English</option>
+      <option value="ja">日本語</option>
+    </select>
+  </div>
+
   <h1 id="title"></h1>
 
   <label id="lbl-board"></label>
-  <input id="board" placeholder="xiao_ble/nrf52840">
+  <select id="board">
+    <option value="">-- Select --</option>
+    <option value="xiao_ble">XIAO BLE / Sense</option>
+    <option value="promicro">ProMicro</option>
+    <option value="mini">SlimeVR Mini</option>
+    <option value="mochi">Mochi</option>
+    <option value="dongle">Nordic Dongle</option>
+  </select>
 
-  <label id="lbl-filename"></label>
-  <input id="filename" placeholder="SlimeNRF_Tracker_XIAO">
+  <label id="lbl-iface"></label>
+  <select id="iface" disabled>
+    <option value="">-- N/A --</option>
+  </select>
 
   <label id="lbl-clk"></label>
   <select id="clk">
@@ -31,33 +53,127 @@
     <option value="disabled">disabled</option>
   </select>
 
+  <label id="lbl-sw0"></label>
+  <select id="sw0">
+    <option value="disabled">disabled</option>
+    <option value="enabled">enabled</option>
+  </select>
+
+  <label id="lbl-mag"></label>
+  <select id="mag">
+    <option value="enabled">enabled</option>
+    <option value="disabled">disabled</option>
+  </select>
+
+  <label id="lbl-filename"></label>
+  <input id="filename" readonly>
+
   <button id="btn-build"></button>
   <p id="status"></p>
 
-  <script>
-  const api = "https://api.github.com/repos/NekodaKohaku/SlimeNRF-Firmware-CI/actions/workflows/proxy_dispatch.yml/dispatches";
+<script>
+// ---- Board 定義 ----
+const boardConfigs = {
+  xiao_ble: { board: "xiao_ble/nrf52840", iface: ["i2c"], fileformat: "uf2" },
+  promicro: { board: "promicro_uf2/nrf52840", iface: ["i2c", "spi", "smspi"], fileformat: "uf2" },
+  mini: { board: "slimevrmini_p4_uf2/nrf52833", iface: ["i2c"], fileformat: "uf2" },
+  mochi: { board: "mochi_uf2/nrf52833", iface: ["i2c"], fileformat: "uf2" },
+  dongle: { board: "nrf52840dongle/nrf52840", iface: [], fileformat: "hex" }
+};
 
-  function triggerBuild() {
-    const board = document.getElementById("board").value;
-    const filename = document.getElementById("filename").value;
-    const clk = document.getElementById("clk").value;
-    const sleep = document.getElementById("sleep").value;
-    const status = document.getElementById("status");
-    status.textContent = t("building");
+// ---- 語言設定 ----
+function detectLanguage() {
+  const lang = navigator.language.toLowerCase();
+  if (lang.includes("zh")) return "zh";
+  if (lang.includes("ja")) return "ja";
+  return "en";
+}
+function setLanguage(lang) {
+  const t = getLangTexts(lang === "auto" ? detectLanguage() : lang);
+  document.getElementById("title").textContent = t.title;
+  document.getElementById("lbl-board").textContent = t.board;
+  document.getElementById("lbl-iface").textContent = t.iface;
+  document.getElementById("lbl-clk").textContent = t.clk;
+  document.getElementById("lbl-sleep").textContent = t.sleep;
+  document.getElementById("lbl-sw0").textContent = t.sw0;
+  document.getElementById("lbl-mag").textContent = t.mag;
+  document.getElementById("lbl-filename").textContent = t.filename;
+  document.getElementById("btn-build").textContent = t.build;
+}
+document.getElementById("langSelect").addEventListener("change", e => setLanguage(e.target.value));
+setLanguage("auto");
 
-    fetch(api, {
+// ---- 動態選項 ----
+const ifaceSelect = document.getElementById("iface");
+const boardSelect = document.getElementById("board");
+boardSelect.addEventListener("change", () => {
+  const selected = boardSelect.value;
+  ifaceSelect.innerHTML = "";
+  ifaceSelect.disabled = true;
+  if (selected && boardConfigs[selected]) {
+    const ifaceList = boardConfigs[selected].iface;
+    if (ifaceList.length > 0) {
+      ifaceSelect.disabled = false;
+      ifaceList.forEach(i => {
+        const opt = document.createElement("option");
+        opt.value = i;
+        opt.textContent = i.toUpperCase();
+        ifaceSelect.appendChild(opt);
+      });
+    } else {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "-- N/A --";
+      ifaceSelect.appendChild(opt);
+    }
+  }
+  updateFilename();
+});
+
+// ---- 自動生成 filename ----
+const selects = ["iface","clk","sleep","sw0"];
+selects.forEach(id => document.getElementById(id).addEventListener("change", updateFilename));
+function updateFilename() {
+  const key = boardSelect.value;
+  if (!key) return document.getElementById("filename").value = "";
+  const iface = document.getElementById("iface").value;
+  const clk = document.getElementById("clk").value;
+  const sleep = document.getElementById("sleep").value;
+  const sw0 = document.getElementById("sw0").value;
+  const cfg = boardConfigs[key];
+  const filename = `SlimeNRF_Tracker${iface ? "_" + iface.toUpperCase() : ""}_${key}_${clk}_${sleep}_${sw0}.${cfg.fileformat}`;
+  document.getElementById("filename").value = filename;
+}
+
+// ---- 觸發 build ----
+const api = "https://api.github.com/repos/NekodaKohaku/SlimeNRF-Firmware-CI/actions/workflows/public_build.yml/dispatches";
+document.getElementById("btn-build").onclick = async function triggerBuild() {
+  const lang = detectLanguage();
+  const t = getLangTexts(lang);
+  const key = boardSelect.value;
+  if (!key) return document.getElementById("status").textContent = t.selectBoard;
+  const iface = document.getElementById("iface").value;
+  const clk = document.getElementById("clk").value;
+  const sleep = document.getElementById("sleep").value;
+  const sw0 = document.getElementById("sw0").value;
+  const magnetometer = document.getElementById("mag").value;
+  const cfg = boardConfigs[key];
+  const board = cfg.board + (iface ? `/${iface}` : "");
+  const filename = document.getElementById("filename").value;
+
+  const status = document.getElementById("status");
+  status.textContent = t.building;
+  try {
+    const r = await fetch(api, {
       method: "POST",
       headers: { "Accept": "application/vnd.github+json" },
-      body: JSON.stringify({ ref: "main", inputs: { board, filename, clk, sleep } })
-    })
-    .then(r => r.ok ? status.textContent = t("success")
-                    : status.textContent = t("failed") + " " + r.statusText);
+      body: JSON.stringify({ ref: "main", inputs: { board, filename, clk, sleep, sw0, magnetometer } })
+    });
+    status.textContent = r.ok ? t.success : t.failed + " " + r.statusText;
+  } catch {
+    status.textContent = t.failed;
   }
-
-  const userLang = navigator.language.startsWith("ja") ? "ja" :
-                   navigator.language.startsWith("zh") ? "zh" : "en";
-  setLanguage(userLang);
-  document.getElementById("btn-build").onclick = triggerBuild;
-  </script>
+};
+</script>
 </body>
 </html>

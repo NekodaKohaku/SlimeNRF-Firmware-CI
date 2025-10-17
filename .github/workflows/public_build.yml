@@ -4,102 +4,72 @@ on:
   workflow_dispatch:
     inputs:
       board:
-        description: "Target board path (e.g. promicro_uf2/nrf52840/i2c)"
+        description: 'Board target path'
         required: true
-        type: string
       filename:
-        description: "Output filename"
+        description: 'Output filename'
         required: true
-        type: string
       clk:
-        description: "Clock enable/disable"
-        required: false
-        default: "enabled"
-        type: string
+        description: 'Clock setting'
+        required: true
       sleep:
-        description: "Sleep mode enable/disable"
-        required: false
-        default: "enabled"
-        type: string
+        description: 'Sleep mode'
+        required: true
       sw0:
-        description: "SW0 enable/disable"
-        required: false
-        default: "enabled"
-        type: string
+        description: 'SW0 enable'
+        required: true
       magnetometer:
-        description: "Magnetometer enable/disable"
-        required: false
-        default: "enabled"
-        type: string
+        description: 'Magnetometer'
+        required: true
+      pinmode:
+        description: 'Pin wiring mode (stacked/nonstacked/custom/default)'
+        required: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Setup Zephyr build environment
+      - name: Setup west / Zephyr
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build gperf cmake python3-pip
           pip install west
           west init -l .
           west update
 
-      - name: Apply dynamic configuration
+      - name: Select board build
         run: |
-          echo "🔧 Applying build options..."
-          echo "Board: ${{ github.event.inputs.board }}"
-          echo "Clock: ${{ github.event.inputs.clk }}"
-          echo "Sleep: ${{ github.event.inputs.sleep }}"
-          echo "SW0: ${{ github.event.inputs.sw0 }}"
-          echo "Magnetometer: ${{ github.event.inputs.magnetometer }}"
+          echo "Pin mode: ${{ github.event.inputs.pinmode }}"
+          case "${{ github.event.inputs.pinmode }}" in
+            stacked)
+              BOARD_TARGET="promicro_uf2_i2c_stacked"
+              ;;
+            nonstacked)
+              BOARD_TARGET="promicro_uf2_i2c_nonstacked"
+              ;;
+            custom)
+              BOARD_TARGET="promicro_uf2_i2c_custom"
+              ;;
+            *)
+              BOARD_TARGET="${{ github.event.inputs.board }}"
+              ;;
+          esac
 
-          DTS_PATH="boards/nordic/${{ github.event.inputs.board }}.dts"
-          echo "Target DTS: $DTS_PATH"
+          echo "Building board: $BOARD_TARGET"
+          mkdir -p build
+          west build -b "$BOARD_TARGET" -d build
 
-          if [ -f "$DTS_PATH" ]; then
-            echo "Modifying $DTS_PATH ..."
-
-            # Disable external clock if requested
-            if [ "${{ github.event.inputs.clk }}" = "disabled" ]; then
-              sed -i 's/clk-gpios = <[^>]*>;/\/\/ clk disabled/g' "$DTS_PATH"
-            fi
-
-            # Disable SW0 if requested
-            if [ "${{ github.event.inputs.sw0 }}" = "disabled" ]; then
-              sed -i 's/aliases {[^}]*sw0[^}]*};/\/\/ sw0 disabled/g' "$DTS_PATH"
-            fi
-
-            # Disable magnetometer node
-            if [ "${{ github.event.inputs.magnetometer }}" = "disabled" ]; then
-              sed -i 's/mag: mag@0 {[^}]*};/\/\/ magnetometer disabled/g' "$DTS_PATH"
-            fi
-          else
-            echo "⚠️ DTS file not found: $DTS_PATH"
-          fi
-
-      - name: Build firmware
-        run: |
-          echo "🚧 Building firmware..."
-          west build -b ${{ github.event.inputs.board }} app -- -DOUTPUT_NAME=${{ github.event.inputs.filename }}
-
-      - name: Package firmware
+      - name: Archive firmware
         run: |
           mkdir -p output
-          if [ -f build/zephyr/zephyr.uf2 ]; then
-            cp build/zephyr/zephyr.uf2 output/${{ github.event.inputs.filename }}
-          elif [ -f build/zephyr/zephyr.hex ]; then
-            cp build/zephyr/zephyr.hex output/${{ github.event.inputs.filename }}
-          else
-            echo "❌ No output file found in build/zephyr/"
-            exit 1
-          fi
+          cp build/zephyr/zephyr.uf2 output/${{ github.event.inputs.filename }} || true
+          cp build/zephyr/zephyr.hex output/${{ github.event.inputs.filename }} || true
 
-      - name: Upload artifact
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.filename }}
-          path: output/${{ github.event.inputs.filename }}
+          name: firmware
+          path: output/

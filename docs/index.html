@@ -41,6 +41,11 @@
     <option value="">-- N/A --</option>
   </select>
 
+  <label id="lbl-pinmode"></label>
+  <select id="pinmode" disabled>
+    <option value="default">Default</option>
+  </select>
+
   <label id="lbl-clk"></label>
   <select id="clk">
     <option value="enabled">enabled</option>
@@ -72,11 +77,10 @@
   <p id="status"></p>
 
 <script>
-// ===== GitHub Device Flow OAuth =====
-const CLIENT_ID = "Ov23lipHbwgfbIyxXe7P"; // Replace with your GitHub OAuth App client ID
+const CLIENT_ID = "Ov23lipHbwgfbIyxXe7P";
 let accessToken = null;
 
-// ===== Language handling =====
+// --- Language ---
 function detectLanguage() {
   const lang = navigator.language.toLowerCase();
   if (lang.includes("zh")) return "zh";
@@ -89,6 +93,7 @@ function setLanguage(lang) {
   document.getElementById("title").textContent = t.title;
   document.getElementById("lbl-board").textContent = t.board;
   document.getElementById("lbl-iface").textContent = t.iface;
+  document.getElementById("lbl-pinmode").textContent = t.pinmode;
   document.getElementById("lbl-clk").textContent = t.clk;
   document.getElementById("lbl-sleep").textContent = t.sleep;
   document.getElementById("lbl-sw0").textContent = t.sw0;
@@ -99,14 +104,11 @@ function setLanguage(lang) {
 document.getElementById("langSelect").addEventListener("change", e => setLanguage(e.target.value));
 setLanguage("auto");
 
-// ===== OAuth =====
+// --- OAuth ---
 async function githubLogin() {
   const deviceResp = await fetch("https://github.com/login/device/code", {
     method: "POST",
-    headers: { 
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Accept": "application/json"
-    },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
     body: `client_id=${CLIENT_ID}&scope=repo`
   });
   const deviceData = await deviceResp.json();
@@ -116,10 +118,7 @@ async function githubLogin() {
     await new Promise(r => setTimeout(r, deviceData.interval * 1000));
     const poll = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
-      headers: { 
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json"
-      },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
       body: `client_id=${CLIENT_ID}&device_code=${deviceData.device_code}&grant_type=urn:ietf:params:oauth:grant-type:device_code`
     });
     const res = await poll.json();
@@ -131,27 +130,33 @@ async function githubLogin() {
   throw new Error("Login timeout or cancelled.");
 }
 
-// ===== Board definitions =====
+// --- Board config ---
 const boardConfigs = {
-  xiao_ble: { board: "xiao_ble/nrf52840", iface: ["i2c"], fileformat: "uf2" },
-  promicro: { board: "promicro_uf2/nrf52840", iface: ["i2c", "spi", "smspi"], fileformat: "uf2" },
-  mini: { board: "slimevrmini_p4_uf2/nrf52833", iface: ["i2c"], fileformat: "uf2" },
-  mochi: { board: "mochi_uf2/nrf52833", iface: ["i2c"], fileformat: "uf2" },
-  dongle: { board: "nrf52840dongle/nrf52840", iface: [], fileformat: "hex" }
+  xiao_ble: { board: "xiao_ble/nrf52840", iface: ["i2c"], pinmode: ["default", "custom"], fileformat: "uf2" },
+  promicro: { board: "promicro_uf2/nrf52840", iface: ["i2c","spi","smspi"], pinmode: ["stacked","nonstacked","custom"], fileformat: "uf2" },
+  mini: { board: "slimevrmini_p4_uf2/nrf52833", iface: ["i2c"], pinmode: ["default","custom"], fileformat: "uf2" },
+  mochi: { board: "mochi_uf2/nrf52833", iface: ["i2c"], pinmode: ["default","custom"], fileformat: "uf2" },
+  dongle: { board: "nrf52840dongle/nrf52840", iface: [], pinmode: ["default","custom"], fileformat: "hex" }
 };
 
-// ===== Dynamic options =====
+// --- UI update ---
 const ifaceSelect = document.getElementById("iface");
 const boardSelect = document.getElementById("board");
+const pinmodeSelect = document.getElementById("pinmode");
+
 boardSelect.addEventListener("change", () => {
   const selected = boardSelect.value;
   ifaceSelect.innerHTML = "";
+  pinmodeSelect.innerHTML = "";
   ifaceSelect.disabled = true;
+  pinmodeSelect.disabled = true;
+
   if (selected && boardConfigs[selected]) {
-    const ifaceList = boardConfigs[selected].iface;
-    if (ifaceList.length > 0) {
+    const cfg = boardConfigs[selected];
+
+    if (cfg.iface.length > 0) {
       ifaceSelect.disabled = false;
-      ifaceList.forEach(i => {
+      cfg.iface.forEach(i => {
         const opt = document.createElement("option");
         opt.value = i;
         opt.textContent = i.toUpperCase();
@@ -163,12 +168,22 @@ boardSelect.addEventListener("change", () => {
       opt.textContent = "-- N/A --";
       ifaceSelect.appendChild(opt);
     }
+
+    if (cfg.pinmode.length > 0) {
+      pinmodeSelect.disabled = false;
+      cfg.pinmode.forEach(w => {
+        const opt = document.createElement("option");
+        opt.value = w;
+        opt.textContent = w === "nonstacked" ? "Non-Stacked" : w.charAt(0).toUpperCase() + w.slice(1);
+        pinmodeSelect.appendChild(opt);
+      });
+    }
   }
   updateFilename();
 });
 
-// ===== Auto-generate filename =====
-const selects = ["iface","clk","sleep","sw0"];
+// --- filename ---
+const selects = ["iface","clk","sleep","sw0","pinmode"];
 selects.forEach(id => document.getElementById(id).addEventListener("change", updateFilename));
 
 function updateFilename() {
@@ -178,29 +193,24 @@ function updateFilename() {
   const clk = document.getElementById("clk").value;
   const sleep = document.getElementById("sleep").value;
   const sw0 = document.getElementById("sw0").value;
+  const pinmode = document.getElementById("pinmode").value;
   const cfg = boardConfigs[key];
-  const filename = `SlimeNRF_Tracker${iface ? "_" + iface.toUpperCase() : ""}_${key}_${clk}_${sleep}_${sw0}.${cfg.fileformat}`;
+  const filename = `SlimeNRF_${key}_${iface || "none"}_${pinmode}_${clk}_${sleep}_${sw0}.${cfg.fileformat}`;
   document.getElementById("filename").value = filename;
 }
 
-// ===== Trigger GitHub Action =====
+// --- Build trigger ---
 const api = "https://api.github.com/repos/NekodaKohaku/SlimeNRF-Firmware-CI/actions/workflows/public_build.yml/dispatches";
 document.getElementById("btn-build").onclick = async function triggerBuild() {
-  const lang = detectLanguage();
-  const t = getLangTexts(lang);
+  const t = getLangTexts(detectLanguage());
   const key = boardSelect.value;
   const status = document.getElementById("status");
   if (!key) return status.textContent = t.selectBoard;
 
   if (!accessToken) {
     status.textContent = t.loginStart;
-    try {
-      await githubLogin();
-      status.textContent = t.loginSuccess;
-    } catch (e) {
-      status.textContent = t.loginFail + " " + e.message;
-      return;
-    }
+    try { await githubLogin(); status.textContent = t.loginSuccess; }
+    catch (e) { status.textContent = t.loginFail + " " + e.message; return; }
   }
 
   const iface = document.getElementById("iface").value;
@@ -208,6 +218,7 @@ document.getElementById("btn-build").onclick = async function triggerBuild() {
   const sleep = document.getElementById("sleep").value;
   const sw0 = document.getElementById("sw0").value;
   const magnetometer = document.getElementById("mag").value;
+  const pinmode = document.getElementById("pinmode").value;
   const cfg = boardConfigs[key];
   const board = cfg.board + (iface ? `/${iface}` : "");
   const filename = document.getElementById("filename").value;
@@ -216,13 +227,10 @@ document.getElementById("btn-build").onclick = async function triggerBuild() {
   try {
     const r = await fetch(api, {
       method: "POST",
-      headers: {
-        "Accept": "application/vnd.github+json",
-        "Authorization": `Bearer ${accessToken}`
-      },
+      headers: { "Accept": "application/vnd.github+json", "Authorization": `Bearer ${accessToken}` },
       body: JSON.stringify({
         ref: "main",
-        inputs: { board, filename, clk, sleep, sw0, magnetometer }
+        inputs: { board, filename, clk, sleep, sw0, magnetometer, pinmode }
       })
     });
     status.textContent = r.ok ? t.success : t.failed + " " + r.statusText;

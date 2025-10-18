@@ -76,12 +76,17 @@ jobs:
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
-      - name: ♻️ Init workspace
+      - name: ♻️ Init workspace (west)
         run: |
           set -eux
           west init -l .
           west update --narrow -o=--depth=1
           west zephyr-export
+          # 讓後續每個 step 都繼承 Zephyr/NCS 環境（關鍵）
+          echo "ZEPHYR_BASE=$(pwd)/zephyr" >> $GITHUB_ENV
+          echo "ZEPHYR_TOOLCHAIN_VARIANT=zephyr" >> $GITHUB_ENV
+          echo "ZEPHYR_SDK_INSTALL_DIR=$HOME/zephyr-sdk-0.17.2" >> $GITHUB_ENV
+          echo "$HOME/zephyr-sdk-0.17.2/arm-zephyr-eabi/bin" >> $GITHUB_PATH
 
       - name: 📥 Ensure SlimeVR-Tracker-nRF exists
         run: |
@@ -133,7 +138,7 @@ jobs:
           set -eux
           PINS="${{ inputs.pins }}"
 
-          # 解析 key=value，拿不到就回傳空字串
+          # 解析 key=value（拿不到就空）
           getkv() { echo "$PINS" | grep -oE "(^|[,[:space:]])$1=[^,[:space:]]+" | tail -n1 | sed -E "s/.*$1=//"; }
           norm() { v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
 
@@ -205,44 +210,29 @@ jobs:
             } >> custom_overlay/custom.overlay
           fi
 
-      - name: 🔨 Build (no-sysbuild, with fallback)
+      - name: 🔨 Build (west → fallback raw CMake)
         run: |
           set -euxo pipefail
-
           BOARD="promicro_uf2/nrf52840/${{ inputs.iface }}"
           APP_DIR="SlimeVR-Tracker-nRF"
           mkdir -p build
 
-          APP_ROOT="$(pwd)/${APP_DIR}"
-          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=${APP_ROOT} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
+          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=../${APP_DIR} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
           if [ "${{ inputs.pinmode }}" = "custom" ]; then
             EXTRA_ARGS="${EXTRA_ARGS} -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay"
           fi
 
-          echo ">>> Try west (sysbuild off)"
-          if west build -s "${APP_DIR}" -b "${BOARD}" --pristine=always -d build --sysbuild off -- ${EXTRA_ARGS}; then
-            echo ">>> west ok (--sysbuild off)"
-          elif west build -s "${APP_DIR}" -b "${BOARD}" --pristine=always -d build --sysbuild=off -- ${EXTRA_ARGS}; then
-            echo ">>> west ok (--sysbuild=off)"
-          else
+          # 先用 west build
+          if ! west build --board "$BOARD" "$APP_DIR" --pristine=always -d build -- ${EXTRA_ARGS}; then
             echo ">>> west failed, fallback to raw CMake"
             rm -rf build
             cmake -B build -GNinja \
-              -DBOARD="${BOARD}" \
+              -DBOARD="$BOARD" \
+              -DZEPHYR_BASE="$ZEPHYR_BASE" \
               ${EXTRA_ARGS} \
-              -S "${APP_DIR}"
+              -S "$APP_DIR"
             ninja -C build
           fi
-
-      - name: 🔍 Dump logs if failed
-        if: failure()
-        run: |
-          echo "===== CMakeError.log =====" || true
-          test -f build/CMakeFiles/CMakeError.log && sed -n '1,200p' build/CMakeFiles/CMakeError.log || true
-          echo "===== CMakeOutput.log =====" || true
-          test -f build/CMakeFiles/CMakeOutput.log && sed -n '1,200p' build/CMakeFiles/CMakeOutput.log || true
-          echo "===== zephyr/.config =====" || true
-          test -f build/zephyr/.config && sed -n '1,200p' build/zephyr/.config || true
 
       - name: 🧾 Job Summary
         run: |

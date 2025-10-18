@@ -20,19 +20,19 @@ on:
         required: true
         type: choice
         options: [enabled, disabled]
-        default: enabled
+        default: disabled
       sensor_clock:
         description: "External Sensor Clock (clk-gpios)"
         required: true
         type: choice
         options: [enabled, disabled]
-        default: disabled
+        default: enabled
       extra_actions:
         description: "User Extra Actions"
         required: true
         type: choice
         options: [enabled, disabled]
-        default: enabled
+        default: disabled
       sw0_button:
         description: "SW0 Button"
         required: true

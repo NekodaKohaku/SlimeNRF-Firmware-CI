@@ -82,7 +82,6 @@ jobs:
           west init -l .
           west update --narrow -o=--depth=1
           west zephyr-export
-          # 讓後續每個 step 都繼承 Zephyr/NCS 環境（關鍵）
           echo "ZEPHYR_BASE=$(pwd)/zephyr" >> $GITHUB_ENV
           echo "ZEPHYR_TOOLCHAIN_VARIANT=zephyr" >> $GITHUB_ENV
           echo "ZEPHYR_SDK_INSTALL_DIR=$HOME/zephyr-sdk-0.17.2" >> $GITHUB_ENV
@@ -94,7 +93,25 @@ jobs:
           if [ ! -d SlimeVR-Tracker-nRF ]; then
             git clone --depth 1 https://github.com/SlimeVR/SlimeVR-Tracker-nRF.git SlimeVR-Tracker-nRF
           fi
-          test -f SlimeVR-Tracker-nRF/CMakeLists.txt
+
+      - name: 🔎 Detect Zephyr app dir & board root
+        id: path
+        run: |
+          set -eux
+          APP_DIR="SlimeVR-Tracker-nRF"
+          # 若內層存在，更可能是實際 app 目錄
+          if [ -f "SlimeVR-Tracker-nRF/SlimeVR-Tracker-nRF/CMakeLists.txt" ]; then
+            APP_DIR="SlimeVR-Tracker-nRF/SlimeVR-Tracker-nRF"
+          fi
+          # 確認這個 CMakeLists.txt 看起來像 Zephyr app
+          if ! grep -Eq 'find_package\(Zephyr|boilerplate\.cmake' "${APP_DIR}/CMakeLists.txt"; then
+            echo "::error ::${APP_DIR}/CMakeLists.txt 不是 Zephyr App（缺少 find_package(Zephyr) 或 boilerplate）"
+            exit 1
+          fi
+          APP_ROOT="$(dirname "$APP_DIR")"  # 用於 BOARD_ROOT 指向含 boards/ 的上層
+          echo "app_dir=${APP_DIR}"   >> "$GITHUB_OUTPUT"
+          echo "app_root=${APP_ROOT}" >> "$GITHUB_OUTPUT"
+          echo "Detected APP_DIR=$APP_DIR, APP_ROOT=$APP_ROOT"
 
       - name: 🔧 Kconfig toggles → kconfig_user.conf
         run: |
@@ -105,7 +122,6 @@ jobs:
           else
             echo "CONFIG_USE_SENSOR_CLOCK=n" >> kconfig_user.conf
           fi
-
           if [ "${{ inputs.sleep }}" = "enabled" ]; then
             {
               echo "CONFIG_USE_IMU_WAKE_UP=y"
@@ -119,13 +135,11 @@ jobs:
               echo "CONFIG_SENSOR_USE_LOW_POWER_2=n"
             } >> kconfig_user.conf
           fi
-
           if [ "${{ inputs.magnetometer }}" = "enabled" ]; then
             echo "CONFIG_SENSOR_USE_MAG=y" >> kconfig_user.conf
           else
             echo "CONFIG_SENSOR_USE_MAG=n" >> kconfig_user.conf
           fi
-
           if [ "${{ inputs.sw0 }}" = "enabled" ]; then
             echo "CONFIG_USER_SW0=y" >> kconfig_user.conf
           else
@@ -138,7 +152,6 @@ jobs:
           set -eux
           PINS="${{ inputs.pins }}"
 
-          # 解析 key=value（拿不到就空）
           getkv() { echo "$PINS" | grep -oE "(^|[,[:space:]])$1=[^,[:space:]]+" | tail -n1 | sed -E "s/.*$1=//"; }
           norm() { v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
 
@@ -148,7 +161,6 @@ jobs:
           INT0=$(norm "$(getkv int0)"); LED=$(norm "$(getkv led)")
           CLKPIN=$(norm "$(getkv clk_pin)"); VCC=$(norm "$(getkv vcc)")
 
-          # 預設值
           : "${SDA:=6}"  ; : "${SCL:=8}"
           : "${MOSI:=6}" ; : "${MISO:=24}" ; : "${SCK:=8}" ; : "${CS:=22}"
           : "${INT0:=17}" ; : "${LED:=15}" ; : "${CLKPIN:=20}" ; : "${VCC:=31}"
@@ -211,23 +223,25 @@ jobs:
           fi
 
       - name: 🔨 Build (west → fallback raw CMake)
+        env:
+          APP_DIR: ${{ steps.path.outputs.app_dir }}
+          APP_ROOT: ${{ steps.path.outputs.app_root }}
         run: |
           set -euxo pipefail
           BOARD="promicro_uf2/nrf52840/${{ inputs.iface }}"
-          APP_DIR="SlimeVR-Tracker-nRF"
           mkdir -p build
 
-          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=../${APP_DIR} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
+          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=../${APP_ROOT} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
           if [ "${{ inputs.pinmode }}" = "custom" ]; then
             EXTRA_ARGS="${EXTRA_ARGS} -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay"
           fi
 
-          # 先用 west build
           if ! west build --board "$BOARD" "$APP_DIR" --pristine=always -d build -- ${EXTRA_ARGS}; then
             echo ">>> west failed, fallback to raw CMake"
             rm -rf build
             cmake -B build -GNinja \
               -DBOARD="$BOARD" \
+              -DBOARD_ROOT="${APP_ROOT}" \
               -DZEPHYR_BASE="$ZEPHYR_BASE" \
               ${EXTRA_ARGS} \
               -S "$APP_DIR"

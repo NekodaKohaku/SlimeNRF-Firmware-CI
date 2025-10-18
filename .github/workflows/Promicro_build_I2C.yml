@@ -13,28 +13,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # ===== 這一段是「使用者可改」的集中設定 =====
     env:
-      # 固定板與檔名前綴
       BOARD_PREFIX: "promicro_uf2/nrf52840/"
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # --- Pin 設定（直接改這裡）---
+      # --- ピン設定---
       SDA: "P0.06"
       SCL: "P0.08"
       PWM0: "P0.15"
       SW0:  "P1.00"
       LED:  "P0.15"
-      CLK:  "P0.20"   # 外接時鐘腳位（是否啟用由 SENSOR_CLOCK 控）
+      CLK:  "P0.20"
 
-      # --- 功能開關（enabled/disabled）---
+      # --- 機能スイッチ（enabled/disabled）---
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
       SENSOR_CLOCK: "enabled"
       EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
-    # ===== 集中設定結束 =====
 
     steps:
       - name: Acquire code (root)
@@ -104,7 +101,7 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      # ===== 套用「集中設定」到 DTS：固定、可讀、好改 =====
+      # ===== 集中設定を DTS に適用：固定・可読・編集しやすい =====
       - name: Apply pin mapping to DTS
         shell: bash
         run: |
@@ -124,7 +121,7 @@ jobs:
             else
               echo "Invalid pin: $s" >&2; exit 1
             fi
-            # 強制十進位，去前導零，避免 08/09 觸發八進位錯
+            # 常に10進数で解釈し、先頭の0を除去（08/09が8進数エラーになるのを防ぐ）
             pin=$((10#$pin))
             echo "$port $pin"
           }
@@ -143,29 +140,30 @@ jobs:
             fi
           done
 
-          # I2C0 default/sleep
+          # I2C0（default/sleep）ブロックの psels を置換
           sed -i -E \
             -e "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
             -e "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/     s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
             "$DTS"
 
-          # PWM0 default/sleep
+          # PWM0（default/sleep）ブロックの psels を置換
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             "$DTS"
 
-          # SW0（buttons 節點）
+          # SW0（buttons ノード）
           sed -i -E \
             "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" \
             "$DTS"
 
-          # LED（zephyr,user 節點）— 在替換字串中用 \\& 產生字面上的 &
+          # LED（zephyr,user ノード）— 置換文字列では \\& を使ってリテラルの & を出す
           sed -i -E \
             "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#" \
             "$DTS"
 
-          # clk-gpios：若原本註解，先解註再覆蓋；若存在就覆蓋數值（替換字串中的 & 也必須跳脫）
+          # clk-gpios：もともとコメントアウトなら解除してから上書き、既存なら値だけ上書き
+          # （置換文字列の & もエスケープが必要）
           sed -i -E \
             "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
                s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
@@ -173,7 +171,7 @@ jobs:
              }" \
             "$DTS"
 
-      # ===== 功能開關：外接時鐘 =====
+      # ===== 機能スイッチ：外部センサ用クロック =====
       - name: Enable External Sensor Clock
         if: env.SENSOR_CLOCK == 'enabled'
         run: |
@@ -192,7 +190,7 @@ jobs:
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 功能開關：Extra Actions =====
+      # ===== 機能スイッチ：Extra Actions =====
       - name: Enable Extra Actions
         if: env.EXTRA_ACTIONS == 'enabled'
         run: |
@@ -205,7 +203,7 @@ jobs:
           cd zephyr-workspace
           printf "\nCONFIG_USER_EXTRA_ACTIONS=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 功能開關：磁力計 =====
+      # ===== 機能スイッチ：磁気センサ（Magnetometer） =====
       - name: Enable Magnetometer
         if: env.MAGNETOMETER == 'enabled'
         run: |
@@ -218,7 +216,7 @@ jobs:
           cd zephyr-workspace
           printf "\nCONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 功能開關：睡眠 =====
+      # ===== 機能スイッチ：スリープ =====
       - name: Enable Sleep
         if: env.SLEEP == 'enabled'
         run: |
@@ -235,7 +233,7 @@ jobs:
           printf "\nCONFIG_SENSOR_LP_TIMEOUT=300000" >> SlimeVR-Tracker-nRF/prj.conf
           printf "\nCONFIG_SENSOR_USE_LOW_POWER_2=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 功能開關：SW0 按鍵 =====
+      # ===== 機能スイッチ：SW0 ボタン =====
       - name: Enable SW0 Button
         if: env.SW0_BUTTON == 'enabled'
         run: |
@@ -252,7 +250,7 @@ jobs:
           replace='// sw0 ='
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
 
-      # ===== 正式建置 =====
+      # ===== ビルド =====
       - name: Build SlimeVR-Tracker-nRF (tracker only)
         run: |
           cd zephyr-workspace

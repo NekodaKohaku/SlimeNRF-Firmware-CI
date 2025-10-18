@@ -105,11 +105,11 @@ jobs:
 
           # sleep
           if [ "${{ inputs.sleep }}" = "enabled" ]; then
-            echo "CONFIG_USE_IMU_WAKE_UP=y"   >> "$KF"
-            echo "CONFIG_USE_ACTIVE_TIMEOUT=y" >> "$KF"
+            echo "CONFIG_USE_IMU_WAKE_UP=y"       >> "$KF"
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=y"    >> "$KF"
           else
-            echo "CONFIG_USE_IMU_WAKE_UP=n"     >> "$KF"
-            echo "CONFIG_USE_ACTIVE_TIMEOUT=n"  >> "$KF"
+            echo "CONFIG_USE_IMU_WAKE_UP=n"       >> "$KF"
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=n"    >> "$KF"
             echo "CONFIG_SENSOR_LP_TIMEOUT=300000" >> "$KF"
             echo "CONFIG_SENSOR_USE_LOW_POWER_2=n" >> "$KF"
           fi
@@ -143,7 +143,7 @@ jobs:
       # =========================
       # DTS 屬性（雙向：clk-gpios / sw0）
       # =========================
-      - name: 🔧 DTS: clk-gpios toggle (dual-way)
+      - name: "🔧 DTS: clk-gpios toggle (dual-way)"
         run: |
           set -euxo pipefail
           cd zephyr-workspace
@@ -153,13 +153,13 @@ jobs:
               # 取消註解
               sed -i -E 's|^[[:space:]]*//[[:space:]]*clk-gpios[[:space:]]*=|  clk-gpios =|g' "$DTS" || true
             else
-              # 註解（規一化並加上 //）
+              # 註解
               sed -i -E 's|^[[:space:]]*//[[:space:]]*clk-gpios[[:space:]]*=|// clk-gpios =|g' "$DTS" || true
               sed -i -E 's|(^[[:space:]]*)clk-gpios[[:space:]]*=|\1// clk-gpios =|g' "$DTS" || true
             fi
           fi
 
-      - name: 🔧 DTS: sw0 property toggle (dual-way)
+      - name: "🔧 DTS: sw0 property toggle (dual-way)"
         run: |
           set -euxo pipefail
           cd zephyr-workspace
@@ -169,7 +169,7 @@ jobs:
               # 取消註解
               sed -i -E 's|^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=|  sw0 =|g' "$DTS" || true
             else
-              # 註解（規一化並加上 //）
+              # 註解
               sed -i -E 's|^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=|// sw0 =|g' "$DTS" || true
               sed -i -E 's|(^[[:space:]]*)sw0[[:space:]]*=|\1// sw0 =|g' "$DTS" || true
             fi

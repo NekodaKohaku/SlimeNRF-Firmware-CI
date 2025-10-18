@@ -1,75 +1,198 @@
-name: Public Firmware Builder
+name: Public SlimeNRF Firmware Builder
 
 on:
   workflow_dispatch:
     inputs:
       board:
-        description: 'Board target path'
+        description: "Zephyr board (e.g. promicro_uf2/nrf52840/i2c)"
         required: true
+        type: string
       filename:
-        description: 'Output filename'
+        description: "Output firmware filename"
         required: true
+        type: string
       clk:
-        description: 'Clock setting'
-        required: true
+        description: "Clock (enabled/disabled)"
+        required: false
+        default: "enabled"
       sleep:
-        description: 'Sleep mode'
-        required: true
+        description: "Sleep mode (enabled/disabled)"
+        required: false
+        default: "enabled"
       sw0:
-        description: 'SW0 enable'
-        required: true
+        description: "Button SW0 (enabled/disabled)"
+        required: false
+        default: "enabled"
       magnetometer:
-        description: 'Magnetometer'
-        required: true
+        description: "Magnetometer (enabled/disabled)"
+        required: false
+        default: "enabled"
       pinmode:
-        description: 'Pin wiring mode (stacked/nonstacked/custom/default)'
+        description: "Pin configuration (preset/custom)"
         required: true
+        default: "preset"
+      wiring:
+        description: "ProMicro wiring (default/stacked)"
+        required: false
+        default: "default"
+      sda: { required: false }
+      scl: { required: false }
+      mosi: { required: false }
+      miso: { required: false }
+      sck: { required: false }
+      cs: { required: false }
+      int0: { required: false }
+      led: { required: false }
+      clk_pin: { required: false }
+      vcc: { required: false }
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: 📦 Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup west / Zephyr
+      - name: 🧰 Setup Zephyr build environment
         run: |
-          pip install west
+          sudo apt-get update && sudo apt install -y git cmake ninja-build gperf dfu-util \
+            python3-pip python3-setuptools python3-wheel wget xz-utils
+          pip3 install west
+
+      - name: 🪁 Initialize workspace
+        run: |
           west init -l .
-          west update
+          west update --narrow -o=--depth=1
+          west zephyr-export
 
-      - name: Select board build
+      - name: 🔎 Determine board and app
+        id: meta
         run: |
-          echo "Pin mode: ${{ github.event.inputs.pinmode }}"
-          case "${{ github.event.inputs.pinmode }}" in
-            stacked)
-              BOARD_TARGET="promicro_uf2_i2c_stacked"
-              ;;
-            nonstacked)
-              BOARD_TARGET="promicro_uf2_i2c_nonstacked"
-              ;;
-            custom)
-              BOARD_TARGET="promicro_uf2_i2c_custom"
-              ;;
-            *)
-              BOARD_TARGET="${{ github.event.inputs.board }}"
-              ;;
-          esac
+          BOARD="${{ github.event.inputs.board }}"
+          WIRING="${{ github.event.inputs.wiring }}"
+          APP="SlimeVR-Tracker-nRF"
+          if echo "$BOARD" | grep -q "promicro_uf2" && [ "$WIRING" = "stacked" ]; then
+            APP="Stacked-SmolSlime"
+          fi
+          echo "app=$APP" >> $GITHUB_OUTPUT
+          echo "board=$BOARD" >> $GITHUB_OUTPUT
+          echo "Using APP=$APP BOARD=$BOARD"
 
-          echo "Building board: $BOARD_TARGET"
+      - name: 🧩 Generate custom DTS overlay (pinmode=custom)
+        if: ${{ github.event.inputs.pinmode == 'custom' }}
+        run: |
+          mkdir -p custom_overlay
+          normalize() { v="$1"; v="${v/P0./}"; v="${v/P1./}"; echo "$v"; }
+
+          SDA=$(normalize "${{ github.event.inputs.sda }}")
+          SCL=$(normalize "${{ github.event.inputs.scl }}")
+          MOSI=$(normalize "${{ github.event.inputs.mosi }}")
+          MISO=$(normalize "${{ github.event.inputs.miso }}")
+          SCK=$(normalize "${{ github.event.inputs.sck }}")
+          CS=$(normalize "${{ github.event.inputs.cs }}")
+          INT0=$(normalize "${{ github.event.inputs.int0 }}")
+          LED=$(normalize "${{ github.event.inputs.led }}")
+          CLKPIN=$(normalize "${{ github.event.inputs.clk_pin }}")
+          VCC=$(normalize "${{ github.event.inputs.vcc }}")
+
+          SDA=${SDA:-6}; SCL=${SCL:-8}; MISO=${MISO:-24}; MOSI=${MOSI:-6}
+          SCK=${SCK:-8}; CS=${CS:-22}; INT0=${INT0:-17}; LED=${LED:-15}
+          CLKPIN=${CLKPIN:-20}; VCC=${VCC:-31}
+          IFACE=$(echo "${{ github.event.inputs.board }}" | awk -F'/' '{print $3}')
+
+          echo "/* Auto-generated custom overlay */" > custom_overlay/custom.overlay
+          echo "&zephyr_user {" >> custom_overlay/custom.overlay
+          echo "  int0-gpios = <&gpio0 ${INT0} 0>;" >> custom_overlay/custom.overlay
+          echo "  led-gpios  = <&gpio0 ${LED} 0>;" >> custom_overlay/custom.overlay
+          echo "  clk-gpios  = <&gpio0 ${CLKPIN} 0>;" >> custom_overlay/custom.overlay
+          echo "  vcc-gpios  = <&gpio0 ${VCC} GPIO_ACTIVE_HIGH>;" >> custom_overlay/custom.overlay
+          echo "};" >> custom_overlay/custom.overlay
+
+          # Peripheral bus handling
+          if [ "$IFACE" = "i2c" ] || [ -z "$IFACE" ]; then
+            cat <<EOF >> custom_overlay/custom.overlay
+&i2c0 {
+  status = "okay";
+  pinctrl-0 = <&i2c0_default_custom>;
+  pinctrl-1 = <&i2c0_sleep_custom>;
+};
+&pinctrl {
+  i2c0_default_custom: i2c0_default_custom {
+    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, ${SDA})>, <NRF_PSEL(TWIM_SCL, 0, ${SCL})>; };
+  };
+  i2c0_sleep_custom: i2c0_sleep_custom {
+    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, ${SDA})>, <NRF_PSEL(TWIM_SCL, 0, ${SCL})>; low-power-enable; };
+  };
+};
+EOF
+          else
+            cat <<EOF >> custom_overlay/custom.overlay
+&spi3 {
+  status = "okay";
+  pinctrl-0 = <&spi3_default_custom>;
+  pinctrl-1 = <&spi3_sleep_custom>;
+  cs-gpios = <&gpio0 ${CS} GPIO_ACTIVE_LOW>;
+};
+&pinctrl {
+  spi3_default_custom: spi3_default_custom {
+    group1 { psels = <NRF_PSEL(SPIM_MISO, 0, ${MISO})>, <NRF_PSEL(SPIM_MOSI, 0, ${MOSI})>, <NRF_PSEL(SPIM_SCK, 0, ${SCK})>; };
+  };
+  spi3_sleep_custom: spi3_sleep_custom {
+    group1 { psels = <NRF_PSEL(SPIM_MISO, 0, ${MISO})>, <NRF_PSEL(SPIM_MOSI, 0, ${MOSI})>, <NRF_PSEL(SPIM_SCK, 0, ${SCK})>; low-power-enable; };
+  };
+};
+EOF
+          fi
+
+          # Handle functional toggles (clk/sleep/sw0/magnetometer)
+          [ "${{ github.event.inputs.clk }}" = "disabled" ] && echo "&pwmclock { status = \"disabled\"; };" >> custom_overlay/custom.overlay
+          [ "${{ github.event.inputs.sleep }}" = "disabled" ] && echo "&pm { status = \"disabled\"; };" >> custom_overlay/custom.overlay
+          [ "${{ github.event.inputs.sw0 }}" = "disabled" ] && echo "&button0 { status = \"disabled\"; };" >> custom_overlay/custom.overlay
+          [ "${{ github.event.inputs.magnetometer }}" = "disabled" ] && echo "&mag { status = \"disabled\"; };" >> custom_overlay/custom.overlay
+
+      - name: 🔨 Build firmware
+        run: |
           mkdir -p build
-          west build -b "$BOARD_TARGET" -d build
+          CMD="west build --board \"${{ steps.meta.outputs.board }}\" \"${{ steps.meta.outputs.app }}\" --pristine=always -d build"
+          if [ "${{ github.event.inputs.pinmode }}" = "custom" ]; then
+            CMD="$CMD -- -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay"
+          fi
+          echo "Executing: $CMD"
+          eval $CMD
 
-      - name: Archive firmware
+      - name: 🗓️ Tag and release firmware
+        id: release
         run: |
-          mkdir -p output
-          cp build/zephyr/zephyr.uf2 output/${{ github.event.inputs.filename }} || true
-          cp build/zephyr/zephyr.hex output/${{ github.event.inputs.filename }} || true
+          TAG="build-$(date -u +'%Y%m%d-%H%M%S')"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
-      - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
+      - name: 🚀 Upload firmware to Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: firmware
-          path: output/
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: "Firmware ${{ steps.release.outputs.tag }}"
+          body: |
+            **SlimeNRF Firmware Build**
+            - 🧩 Board: `${{ github.event.inputs.board }}`
+            - ⚙️ Mode: `${{ github.event.inputs.pinmode }}`
+            - 🔌 Wiring: `${{ github.event.inputs.wiring }}`
+            - ⏱️ Clock: `${{ github.event.inputs.clk }}`
+            - 🌙 Sleep: `${{ github.event.inputs.sleep }}`
+            - 🔦 SW0: `${{ github.event.inputs.sw0 }}`
+            - 🧭 Magnetometer: `${{ github.event.inputs.magnetometer }}`
+            - 📄 Filename: `${{ github.event.inputs.filename }}`
+            - 🕒 Built: ${{ steps.release.outputs.date }}
+            ---
+            Download below.
+          files: |
+            build/zephyr/zephyr.uf2
+            build/zephyr/zephyr.hex
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

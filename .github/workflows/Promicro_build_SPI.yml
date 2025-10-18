@@ -105,11 +105,6 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      - name: Force UF2 output (Kconfig)
-        run: |
-          cd zephyr-workspace
-          printf "\nCONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
-
       - name: Apply pin mapping to DTS
         shell: bash
         run: |

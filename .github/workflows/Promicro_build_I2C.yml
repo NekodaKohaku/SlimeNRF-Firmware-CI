@@ -18,7 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # --- ピン設定（ここを直接編集）---
+      # --- ピン設定---
       SDA: "P0.06"
       SCL: "P0.08"
       PWM0: "P0.15"
@@ -28,7 +28,7 @@ jobs:
       INT:  "P0.17"
       VCC:  "P0.31"
 
-      # --- 機能スイッチ（enabled/disabled）---
+      # --- 機能スイッチ---
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
       SENSOR_CLOCK: "enabled"

@@ -1,78 +1,59 @@
-name: Build (Preset / Custom, Stacked / non-Stacked)
+name: Build ProMicro (Preset / Custom, Stacked / non-Stacked)
 
 on:
   workflow_dispatch:
     inputs:
-      board:
-        description: "Zephyr board（例如 promicro_uf2/nrf52840/i2c, xiao_ble/nrf52840）"
+      bus:
+        description: "匯流排（i2c / spi / smspi）"
         required: true
         type: choice
-        options:
-          - promicro_uf2/nrf52840/i2c
-          - promicro_uf2/nrf52840/spi
-          - promicro_uf2/nrf52840/smspi
-          - xiao_ble/nrf52840
-          - slimevrmini_p4_uf2/nrf52833
-          - mochi_uf2/nrf52833
-          - nrf52840dongle/nrf52840
-
+        options: [i2c, spi, smspi]
+        default: i2c
       wiring:
         description: "ProMicro 接線（non-Stacked=default / Stacked=stacked）"
         required: true
         type: choice
         options: [default, stacked]
         default: default
-
       pinmode:
-        description: "腳位模式（preset=預設 / custom=自行填寫以下 pin）"
+        description: "腳位模式（preset=預設 / custom=自行填 pins）"
         required: true
         type: choice
         options: [preset, custom]
         default: preset
-
-      # 介面開關
       clk:
-        description: "外部時鐘（enabled/disabled）"
+        description: "外部時鐘"
         required: true
         type: choice
         options: [enabled, disabled]
         default: enabled
       sleep:
-        description: "睡眠模式（enabled/disabled）"
+        description: "睡眠模式"
         required: true
         type: choice
         options: [enabled, disabled]
         default: enabled
       sw0:
-        description: "SW0 按鍵（enabled/disabled）"
+        description: "SW0 按鍵"
         required: true
         type: choice
         options: [enabled, disabled]
         default: enabled
       magnetometer:
-        description: "磁力計（enabled/disabled）"
+        description: "磁力計"
         required: true
         type: choice
         options: [enabled, disabled]
         default: enabled
-
       filename:
-        description: "輸出檔名（不含副檔名；會自動產生 .uf2 / .hex）"
+        description: "輸出檔名（不含副檔名；會產生 .uf2 / .hex）"
         required: true
         type: string
         default: "SlimeNRF_Tracker_build"
-
-      # 自訂腳位（pinmode=custom 時才會用到；留空會走預設值）
-      sda:     { required: false, type: string, description: "I2C SDA  (e.g. 26 或 P0.26)" }
-      scl:     { required: false, type: string, description: "I2C SCL  (e.g. 27 或 P0.27)" }
-      mosi:    { required: false, type: string, description: "SPI MOSI (e.g. 20 或 P0.20)" }
-      miso:    { required: false, type: string, description: "SPI MISO (e.g. 24 或 P0.24)" }
-      sck:     { required: false, type: string, description: "SPI SCK  (e.g. 8 或 P0.08)" }
-      cs:      { required: false, type: string, description: "SPI CS   (e.g. 22 或 P0.22)" }
-      int0:    { required: false, type: string, description: "INT0（int0-gpios）(e.g. 17)" }
-      led:     { required: false, type: string, description: "LED（led-gpios）(e.g. 15)" }
-      clk_pin: { required: false, type: string, description: "CLK（clk-gpios）(e.g. 20)" }
-      vcc:     { required: false, type: string, description: "VCC EN（vcc-gpios）(e.g. 31)" }
+      pins:
+        description: "自訂腳位（僅 custom；例如：SDA=26 SCL=27 INT0=17 LED=15 CLKPIN=20 VCC=31；或 SPI: MOSI=6 MISO=24 SCK=8 CS=22 …）"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -107,27 +88,24 @@ jobs:
           west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: 🔎 Derive APP / IFACE
+      - name: 🔎 Derive APP / BOARD / IFACE
         id: meta
         shell: bash
         run: |
-          set -eux
-          BOARD="${{ inputs.board }}"
+          set -euxo pipefail
+          BUS="${{ inputs.bus }}"
+          BOARD="promicro_uf2/nrf52840/${BUS}"
           WIRING="${{ inputs.wiring }}"
           APP="SlimeVR-Tracker-nRF"
-          if [[ "$BOARD" == promicro_uf2/* && "$WIRING" == "stacked" ]]; then
+          if [[ "$WIRING" == "stacked" ]]; then
             APP="Stacked-SmolSlime"
           fi
-          IFACE="$(awk -F'/' '{print $3}' <<< "$BOARD")"  # 可能為空（像 xiao_ble）
+          IFACE="$BUS" # 這份 workflow 只跑 promicro，所以 iface=bus
           echo "app=$APP"     >> "$GITHUB_OUTPUT"
+          echo "board=$BOARD" >> "$GITHUB_OUTPUT"
           echo "iface=$IFACE" >> "$GITHUB_OUTPUT"
-
-          # 給 Markdown / summary 用的安全輸出（避免在 YAML/Markdown 中使用 ||）
-          IFACE_PRINT="$IFACE"
-          if [ -z "$IFACE_PRINT" ]; then IFACE_PRINT="n/a"; fi
-          echo "iface_print=$IFACE_PRINT" >> "$GITHUB_OUTPUT"
-
-          echo "Using APP=$APP, IFACE=${IFACE:-<none>}, BOARD=$BOARD"
+          echo "iface_print=$IFACE" >> "$GITHUB_OUTPUT"
+          echo "Using APP=$APP, BOARD=$BOARD, IFACE=$IFACE"
 
       - name: 📎 (Stacked 專用) 複製演算法庫到 APP
         if: ${{ steps.meta.outputs.app == 'Stacked-SmolSlime' }}
@@ -159,20 +137,35 @@ jobs:
 
       - name: 🧩 Generate custom DTS overlay（pinmode=custom）
         if: ${{ inputs.pinmode == 'custom' }}
+        shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
           mkdir -p custom_overlay
+          PINS_STR="${{ inputs.pins }}"
+          # 去除 P0./P1. 前綴 + 大寫 key
+          norm_pin () { v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
 
-          normalize () { v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
-          SDA=$(normalize "${{ inputs.sda }}");     SCL=$(normalize "${{ inputs.scl }}")
-          MOSI=$(normalize "${{ inputs.mosi }}");   MISO=$(normalize "${{ inputs.miso }}")
-          SCK=$(normalize "${{ inputs.sck }}");     CS=$(normalize "${{ inputs.cs }}")
-          INT0=$(normalize "${{ inputs.int0 }}");   LED=$(normalize "${{ inputs.led }}")
-          CLKPIN=$(normalize "${{ inputs.clk_pin }}"); VCC=$(normalize "${{ inputs.vcc }}")
+          # 預設值（避免空字串）
+          SDA=6; SCL=8; MOSI=6; MISO=24; SCK=8; CS=22; INT0=17; LED=15; CLKPIN=20; VCC=31
 
-          : "${SDA:=6}"  ; : "${SCL:=8}"
-          : "${MOSI:=6}" ; : "${MISO:=24}" ; : "${SCK:=8}" ; : "${CS:=22}"
-          : "${INT0:=17}" ; : "${LED:=15}" ; : "${CLKPIN:=20}" ; : "${VCC:=31}"
+          # 解析 "KEY=VAL KEY=VAL ..." 形式的輸入
+          for kv in $PINS_STR; do
+            key="${kv%%=*}"; val="${kv#*=}"
+            key="$(echo "$key" | tr '[:lower:]' '[:upper:]')"
+            val="$(norm_pin "$val")"
+            case "$key" in
+              SDA) SDA="$val" ;;
+              SCL) SCL="$val" ;;
+              MOSI) MOSI="$val" ;;
+              MISO) MISO="$val" ;;
+              SCK) SCK="$val" ;;
+              CS)  CS="$val" ;;
+              INT0) INT0="$val" ;;
+              LED) LED="$val" ;;
+              CLKPIN) CLKPIN="$val" ;;
+              VCC) VCC="$val" ;;
+            esac
+          done
 
           IFACE="${{ steps.meta.outputs.iface }}"
 
@@ -187,8 +180,8 @@ jobs:
             echo "};"
           } > custom_overlay/custom.overlay
 
-          # 依介面追加 I2C 或 SPI3 的節點（全用 echo，避免 YAML 對 & 的誤判）
-          if [[ -z "$IFACE" || "$IFACE" == "i2c" ]]; then
+          # 依 bus 追加 I2C 或 SPI3 節點
+          if [[ "$IFACE" == "i2c" ]]; then
             {
               echo "&i2c0 {"
               echo "  status = \"okay\";"
@@ -236,7 +229,7 @@ jobs:
         run: |
           set -eux
           APP="${{ steps.meta.outputs.app }}"
-          BOARD="${{ inputs.board }}"
+          BOARD="${{ steps.meta.outputs.board }}"
           mkdir -p build
           if [[ "${{ inputs.pinmode }}" == "custom" ]]; then
             west build --board "$BOARD" "$APP" --pristine=always -d build -- \
@@ -249,14 +242,14 @@ jobs:
               -DBOARD_ROOT=../"$APP"
           fi
 
-      - name: 🧾 Job Summary（輸出選項表）
+      - name: 🧾 Job Summary
         run: |
           {
             echo "## Build Summary"
             echo ""
             echo "| Key | Value |"
             echo "|-----|-------|"
-            echo "| Board | \`${{ inputs.board }}\` |"
+            echo "| Board | \`${{ steps.meta.outputs.board }}\` |"
             echo "| Wiring | \`${{ inputs.wiring }}\` |"
             echo "| APP | \`${{ steps.meta.outputs.app }}\` |"
             echo "| Interface | \`${{ steps.meta.outputs.iface_print }}\` |"
@@ -268,7 +261,7 @@ jobs:
             echo "| Filename | \`${{ inputs.filename }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 📦 Collect outputs（用你指定的檔名複製出來）
+      - name: 📦 Collect outputs
         run: |
           set -eux
           mkdir -p output
@@ -281,17 +274,17 @@ jobs:
           echo "tag=build-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
           echo "ts=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_OUTPUT"
 
-      - name: 🚀 Release（附上 Markdown 表格）
+      - name: 🚀 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta2.outputs.tag }}
           name: "Firmware ${{ steps.meta2.outputs.tag }}"
           body: |
-            **SlimeNRF Firmware Build**
+            **SlimeNRF Firmware Build (ProMicro)**
 
             | Key | Value |
             |-----|-------|
-            | Board | `${{ inputs.board }}` |
+            | Board | `${{ steps.meta.outputs.board }}` |
             | Wiring | `${{ inputs.wiring }}` |
             | APP | `${{ steps.meta.outputs.app }}` |
             | Interface | `${{ steps.meta.outputs.iface_print }}` |
@@ -303,7 +296,7 @@ jobs:
             | Filename | `${{ inputs.filename }}` |
             | Built | ${{ steps.meta2.outputs.ts }} |
 
-            下載附件（.uf2 / .hex 如有其一或兩者）。
+            下載附件（.uf2 / .hex，視板子而定）。
           files: |
             output/${{ inputs.filename }}.uf2
             output/${{ inputs.filename }}.hex

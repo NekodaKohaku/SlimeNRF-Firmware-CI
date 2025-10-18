@@ -1,17 +1,21 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>SlimeNRF Firmware Builder</title>
   <script src="lang.js"></script>
   <style>
-    body { font-family: sans-serif; max-width: 650px; margin: 40px auto; background:#fafafa; }
-    label { display: block; margin-top: 10px; }
-    select, input, button { width: 100%; padding: 8px; margin-top: 5px; border-radius:6px; border:1px solid #ccc; }
-    button { background:#4CAF50; color:white; border:none; font-size:16px; cursor:pointer; margin-top:10px; }
+    body { font-family: sans-serif; max-width: 760px; margin: 40px auto; background:#fafafa; }
+    label { display:block; margin-top:12px; font-weight:600; }
+    select, input, button { width:100%; padding:8px; margin-top:6px; border-radius:6px; border:1px solid #ccc; }
+    button { background:#4CAF50; color:#fff; border:none; font-size:16px; cursor:pointer; margin-top:14px; }
     button:hover { background:#45a049; }
-    #status { font-weight:bold; margin-top:10px; }
+    #status { font-weight:bold; margin-top:12px; min-height:24px; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
     .lang-switch { float:right; margin-bottom:10px; }
+    .hint { color:#666; font-size:12px; margin-top:4px; }
+    .muted { color:#777; }
+    .hidden { display:none; }
   </style>
 </head>
 <body>
@@ -26,9 +30,10 @@
 
   <h1 id="title"></h1>
 
+  <!-- Board -->
   <label id="lbl-board"></label>
   <select id="board">
-    <option value="">-- Select --</option>
+    <option value="">{NA}</option>
     <option value="xiao_ble">XIAO BLE / Sense</option>
     <option value="promicro">ProMicro</option>
     <option value="mini">SlimeVR Mini</option>
@@ -36,51 +41,132 @@
     <option value="dongle">Nordic Dongle</option>
   </select>
 
+  <!-- Interface -->
   <label id="lbl-iface"></label>
   <select id="iface" disabled>
-    <option value="">-- N/A --</option>
+    <option value="">{NA}</option>
   </select>
 
+  <!-- ProMicro-specific wiring preset (Default vs Stacked) -->
+  <div id="wiringBlock" class="hidden">
+    <label id="lbl-wiring"></label>
+    <select id="wiring">
+      <option value="default">Default (non-Stacked)</option>
+      <option value="stacked">StackedSmol</option>
+    </select>
+    <div class="hint" id="hint-wiring"></div>
+  </div>
+
+  <!-- Pin mode: preset vs custom -->
   <label id="lbl-pinmode"></label>
-  <select id="pinmode" disabled>
-    <option value="default">Default</option>
+  <select id="pinmode">
+    <option value="preset">Preset</option>
+    <option value="custom">Custom</option>
   </select>
 
-  <label id="lbl-clk"></label>
-  <select id="clk">
-    <option value="enabled">enabled</option>
-    <option value="disabled">disabled</option>
-  </select>
+  <!-- Custom pin inputs -->
+  <div id="customPins" class="hidden">
+    <div class="hint" id="hint-custom"></div>
+    <div class="row">
+      <div>
+        <label>I2C SDA</label>
+        <input id="pin-sda" placeholder="e.g. 26 or P0.26" />
+      </div>
+      <div>
+        <label>I2C SCL</label>
+        <input id="pin-scl" placeholder="e.g. 27 or P0.27" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>SPI MOSI</label>
+        <input id="pin-mosi" placeholder="e.g. 20 or P0.20" />
+      </div>
+      <div>
+        <label>SPI MISO</label>
+        <input id="pin-miso" placeholder="e.g. 24 or P0.24" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>SPI SCK</label>
+        <input id="pin-sck" placeholder="e.g. 8 or P0.08" />
+      </div>
+      <div>
+        <label>SPI CS</label>
+        <input id="pin-cs" placeholder="e.g. 22 or P0.22" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>INT0 (int0-gpios)</label>
+        <input id="pin-int0" placeholder="e.g. 17 or P0.17" />
+      </div>
+      <div>
+        <label>LED (led-gpios)</label>
+        <input id="pin-led" placeholder="e.g. 15 or P0.15" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>CLK (clk-gpios)</label>
+        <input id="pin-clk" placeholder="e.g. 20 or P0.20" />
+      </div>
+      <div>
+        <label>VCC EN (vcc-gpios)</label>
+        <input id="pin-vcc" placeholder="e.g. 31 or P0.31" />
+      </div>
+    </div>
+  </div>
 
-  <label id="lbl-sleep"></label>
-  <select id="sleep">
-    <option value="enabled">enabled</option>
-    <option value="disabled">disabled</option>
-  </select>
+  <!-- Toggles -->
+  <div class="row">
+    <div>
+      <label id="lbl-clk"></label>
+      <select id="clk">
+        <option value="enabled">enabled</option>
+        <option value="disabled">disabled</option>
+      </select>
+    </div>
+    <div>
+      <label id="lbl-sleep"></label>
+      <select id="sleep">
+        <option value="enabled">enabled</option>
+        <option value="disabled">disabled</option>
+      </select>
+    </div>
+  </div>
 
-  <label id="lbl-sw0"></label>
-  <select id="sw0">
-    <option value="disabled">disabled</option>
-    <option value="enabled">enabled</option>
-  </select>
+  <div class="row">
+    <div>
+      <label id="lbl-sw0"></label>
+      <select id="sw0">
+        <option value="disabled">disabled</option>
+        <option value="enabled">enabled</option>
+      </select>
+    </div>
+    <div>
+      <label id="lbl-mag"></label>
+      <select id="mag">
+        <option value="enabled">enabled</option>
+        <option value="disabled">disabled</option>
+      </select>
+    </div>
+  </div>
 
-  <label id="lbl-mag"></label>
-  <select id="mag">
-    <option value="enabled">enabled</option>
-    <option value="disabled">disabled</option>
-  </select>
-
+  <!-- Filename (readonly) -->
   <label id="lbl-filename"></label>
-  <input id="filename" readonly>
+  <input id="filename" readonly />
 
   <button id="btn-build"></button>
   <p id="status"></p>
 
 <script>
-const CLIENT_ID = "Ov23lipHbwgfbIyxXe7P";
+/* ==================== GitHub Device Flow OAuth ==================== */
+const CLIENT_ID = "Ov23lipHbwgfbIyxXe7P"; // TODO: replace with your GitHub OAuth App client ID
 let accessToken = null;
 
-// --- Language ---
+/* ==================== Language handling ==================== */
 function detectLanguage() {
   const lang = navigator.language.toLowerCase();
   if (lang.includes("zh")) return "zh";
@@ -93,7 +179,10 @@ function setLanguage(lang) {
   document.getElementById("title").textContent = t.title;
   document.getElementById("lbl-board").textContent = t.board;
   document.getElementById("lbl-iface").textContent = t.iface;
+  document.getElementById("lbl-wiring").textContent = t.wiring;
+  document.getElementById("hint-wiring").textContent = t.hintWiring;
   document.getElementById("lbl-pinmode").textContent = t.pinmode;
+  document.getElementById("hint-custom").textContent = t.hintCustom;
   document.getElementById("lbl-clk").textContent = t.clk;
   document.getElementById("lbl-sleep").textContent = t.sleep;
   document.getElementById("lbl-sw0").textContent = t.sw0;
@@ -104,15 +193,20 @@ function setLanguage(lang) {
 document.getElementById("langSelect").addEventListener("change", e => setLanguage(e.target.value));
 setLanguage("auto");
 
-// --- OAuth ---
+/* ==================== OAuth login ==================== */
 async function githubLogin() {
+  // Step 1: get device code
   const deviceResp = await fetch("https://github.com/login/device/code", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
     body: `client_id=${CLIENT_ID}&scope=repo`
   });
   const deviceData = await deviceResp.json();
-  alert(`Please open ${deviceData.verification_uri} and enter code: ${deviceData.user_code}`);
+
+  // Show instructions to user
+  alert(`Open ${deviceData.verification_uri} and enter code: ${deviceData.user_code}`);
+
+  // Step 2: poll for access token
   const start = Date.now();
   while (Date.now() - start < deviceData.expires_in * 1000) {
     await new Promise(r => setTimeout(r, deviceData.interval * 1000));
@@ -124,39 +218,44 @@ async function githubLogin() {
     const res = await poll.json();
     if (res.access_token) {
       accessToken = res.access_token;
-      return res.access_token;
+      return accessToken;
     }
   }
   throw new Error("Login timeout or cancelled.");
 }
 
-// --- Board config ---
+/* ==================== Board definitions ==================== */
+// Note: wiring "stacked" is only meaningful for promicro; others ignore it (always "default")
 const boardConfigs = {
-  xiao_ble: { board: "xiao_ble/nrf52840", iface: ["i2c"], pinmode: ["default", "custom"], fileformat: "uf2" },
-  promicro: { board: "promicro_uf2/nrf52840", iface: ["i2c","spi","smspi"], pinmode: ["stacked","nonstacked","custom"], fileformat: "uf2" },
-  mini: { board: "slimevrmini_p4_uf2/nrf52833", iface: ["i2c"], pinmode: ["default","custom"], fileformat: "uf2" },
-  mochi: { board: "mochi_uf2/nrf52833", iface: ["i2c"], pinmode: ["default","custom"], fileformat: "uf2" },
-  dongle: { board: "nrf52840dongle/nrf52840", iface: [], pinmode: ["default","custom"], fileformat: "hex" }
+  xiao_ble: { board: "xiao_ble/nrf52840", iface: ["i2c"], fileformat: "uf2" },
+  promicro: { board: "promicro_uf2/nrf52840", iface: ["i2c", "spi", "smspi"], fileformat: "uf2" },
+  mini: { board: "slimevrmini_p4_uf2/nrf52833", iface: ["i2c"], fileformat: "uf2" },
+  mochi: { board: "mochi_uf2/nrf52833", iface: ["i2c"], fileformat: "uf2" },
+  dongle: { board: "nrf52840dongle/nrf52840", iface: [], fileformat: "hex" }
 };
 
-// --- UI update ---
-const ifaceSelect = document.getElementById("iface");
+/* ==================== Dynamic options & UI logic ==================== */
 const boardSelect = document.getElementById("board");
+const ifaceSelect = document.getElementById("iface");
+const wiringBlock = document.getElementById("wiringBlock");
+const wiringSelect = document.getElementById("wiring");
 const pinmodeSelect = document.getElementById("pinmode");
+const customPins = document.getElementById("customPins");
 
 boardSelect.addEventListener("change", () => {
-  const selected = boardSelect.value;
+  // Rebuild interface options based on board
   ifaceSelect.innerHTML = "";
-  pinmodeSelect.innerHTML = "";
   ifaceSelect.disabled = true;
-  pinmodeSelect.disabled = true;
+  const key = boardSelect.value;
 
-  if (selected && boardConfigs[selected]) {
-    const cfg = boardConfigs[selected];
+  // Show wiring preset only for promicro
+  wiringBlock.classList.toggle("hidden", key !== "promicro");
 
-    if (cfg.iface.length > 0) {
+  if (key && boardConfigs[key]) {
+    const ifaceList = boardConfigs[key].iface;
+    if (ifaceList.length > 0) {
       ifaceSelect.disabled = false;
-      cfg.iface.forEach(i => {
+      ifaceList.forEach(i => {
         const opt = document.createElement("option");
         opt.value = i;
         opt.textContent = i.toUpperCase();
@@ -165,75 +264,120 @@ boardSelect.addEventListener("change", () => {
     } else {
       const opt = document.createElement("option");
       opt.value = "";
-      opt.textContent = "-- N/A --";
+      opt.textContent = "{NA}";
       ifaceSelect.appendChild(opt);
-    }
-
-    if (cfg.pinmode.length > 0) {
-      pinmodeSelect.disabled = false;
-      cfg.pinmode.forEach(w => {
-        const opt = document.createElement("option");
-        opt.value = w;
-        opt.textContent = w === "nonstacked" ? "Non-Stacked" : w.charAt(0).toUpperCase() + w.slice(1);
-        pinmodeSelect.appendChild(opt);
-      });
     }
   }
   updateFilename();
 });
 
-// --- filename ---
-const selects = ["iface","clk","sleep","sw0","pinmode"];
-selects.forEach(id => document.getElementById(id).addEventListener("change", updateFilename));
+pinmodeSelect.addEventListener("change", () => {
+  // Show custom pin fields when pinmode=custom
+  customPins.classList.toggle("hidden", pinmodeSelect.value !== "custom");
+  updateFilename();
+});
+
+[wiringSelect, ifaceSelect].forEach(el => el.addEventListener("change", updateFilename));
+
+// filename auto-composition
+["iface","clk","sleep","sw0","mag"].forEach(id =>
+  document.getElementById(id).addEventListener("change", updateFilename)
+);
 
 function updateFilename() {
   const key = boardSelect.value;
-  if (!key) return document.getElementById("filename").value = "";
-  const iface = document.getElementById("iface").value;
+  if (!key) {
+    document.getElementById("filename").value = "";
+    return;
+  }
+  const iface = ifaceSelect.value;
   const clk = document.getElementById("clk").value;
   const sleep = document.getElementById("sleep").value;
   const sw0 = document.getElementById("sw0").value;
-  const pinmode = document.getElementById("pinmode").value;
+  const pinmode = pinmodeSelect.value;
+  const wiring = (boardSelect.value === "promicro") ? wiringSelect.value : "default";
   const cfg = boardConfigs[key];
-  const filename = `SlimeNRF_${key}_${iface || "none"}_${pinmode}_${clk}_${sleep}_${sw0}.${cfg.fileformat}`;
-  document.getElementById("filename").value = filename;
+
+  const tagIface = iface ? "_" + iface.toUpperCase() : "";
+  const tagWiring = (boardSelect.value === "promicro" && wiring === "stacked") ? "_StackedSmol" : "";
+  const tagMode = (pinmode === "custom") ? "_CustomPins" : "";
+
+  const name = `SlimeNRF_Tracker${tagIface}_${key}${tagWiring}_${clk}_${sleep}_${sw0}${tagMode}.${cfg.fileformat}`;
+  document.getElementById("filename").value = name;
 }
 
-// --- Build trigger ---
+/* ==================== Trigger GitHub Action ==================== */
 const api = "https://api.github.com/repos/NekodaKohaku/SlimeNRF-Firmware-CI/actions/workflows/public_build.yml/dispatches";
 document.getElementById("btn-build").onclick = async function triggerBuild() {
-  const t = getLangTexts(detectLanguage());
+  const lang = detectLanguage();
+  const t = getLangTexts(lang);
   const key = boardSelect.value;
   const status = document.getElementById("status");
-  if (!key) return status.textContent = t.selectBoard;
+  if (!key) {
+    status.textContent = t.selectBoard;
+    return;
+  }
 
   if (!accessToken) {
     status.textContent = t.loginStart;
-    try { await githubLogin(); status.textContent = t.loginSuccess; }
-    catch (e) { status.textContent = t.loginFail + " " + e.message; return; }
+    try {
+      await githubLogin();
+      status.textContent = t.loginSuccess;
+    } catch (e) {
+      status.textContent = t.loginFail + " " + e.message;
+      return;
+    }
   }
 
-  const iface = document.getElementById("iface").value;
+  // gather user selections
+  const iface = ifaceSelect.value;
   const clk = document.getElementById("clk").value;
   const sleep = document.getElementById("sleep").value;
   const sw0 = document.getElementById("sw0").value;
   const magnetometer = document.getElementById("mag").value;
-  const pinmode = document.getElementById("pinmode").value;
+  const pinmode = pinmodeSelect.value;
+  const wiring = (key === "promicro") ? wiringSelect.value : "default";
   const cfg = boardConfigs[key];
+
+  // board string will include iface if present
   const board = cfg.board + (iface ? `/${iface}` : "");
   const filename = document.getElementById("filename").value;
 
+  // collect custom pins (empty strings are fine; server will default)
+  const pins = {
+    sda: document.getElementById("pin-sda").value.trim(),
+    scl: document.getElementById("pin-scl").value.trim(),
+    mosi: document.getElementById("pin-mosi").value.trim(),
+    miso: document.getElementById("pin-miso").value.trim(),
+    sck: document.getElementById("pin-sck").value.trim(),
+    cs:  document.getElementById("pin-cs").value.trim(),
+    int0: document.getElementById("pin-int0").value.trim(),
+    led:  document.getElementById("pin-led").value.trim(),
+    clk_pin: document.getElementById("pin-clk").value.trim(),
+    vcc:  document.getElementById("pin-vcc").value.trim()
+  };
+
   status.textContent = t.building;
+
   try {
     const r = await fetch(api, {
       method: "POST",
-      headers: { "Accept": "application/vnd.github+json", "Authorization": `Bearer ${accessToken}` },
+      headers: {
+        "Accept": "application/vnd.github+json",
+        "Authorization": `Bearer ${accessToken}`
+      },
       body: JSON.stringify({
         ref: "main",
-        inputs: { board, filename, clk, sleep, sw0, magnetometer, pinmode }
+        inputs: {
+          board, filename, clk, sleep, sw0, magnetometer,
+          pinmode, wiring,
+          sda: pins.sda, scl: pins.scl, mosi: pins.mosi, miso: pins.miso, sck: pins.sck, cs: pins.cs,
+          int0: pins.int0, led: pins.led, clk_pin: pins.clk_pin, vcc: pins.vcc
+        }
       })
     });
-    status.textContent = r.ok ? t.success : t.failed + " " + r.statusText;
+
+    status.textContent = r.ok ? t.success : (t.failed + " " + r.statusText);
   } catch (err) {
     status.textContent = t.failed + " " + err.message;
   }

@@ -93,7 +93,7 @@ jobs:
           rm -rf Releases
           mkdir Releases
 
-      - name: Derive names (I2C only)
+      - name: Derive names (I2C)
         run: |
           echo "BOARD=${BOARD_PREFIX}i2c" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}I2C_ProMicro" >> $GITHUB_ENV

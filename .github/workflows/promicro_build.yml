@@ -1,17 +1,49 @@
-name: Auto Build (ProMicro Matrix, clean release)
+name: Build ProMicro (manual, stacked/non-stacked, toggles)
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  schedule:
-    - cron: "30 */12 * * *"   # 每 12 小時
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    inputs:
+      iface:
+        description: "介面 (i2c / spi / smspi)"
+        type: choice
+        required: true
+        options: [i2c, spi, smspi]
+        default: i2c
+      wiring:
+        description: "接線 (non-Stacked=default / Stacked=stacked)"
+        type: choice
+        required: true
+        options: [default, stacked]
+        default: default
+      clk:
+        description: "外部時鐘"
+        type: choice
+        required: true
+        options: [enabled, disabled]
+        default: enabled
+      sleep:
+        description: "睡眠模式"
+        type: choice
+        required: true
+        options: [enabled, disabled]
+        default: enabled
+      sw0:
+        description: "SW0 按鍵"
+        type: choice
+        required: true
+        options: [enabled, disabled]
+        default: disabled
+      magnetometer:
+        description: "磁力計"
+        type: choice
+        required: true
+        options: [enabled, disabled]
+        default: enabled
+      filename:
+        description: "輸出檔名（不含副檔名）"
+        type: string
+        required: true
+        default: "SlimeNRF_Tracker_ProMicro"
 
 permissions:
   contents: write
@@ -19,29 +51,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ===== non-Stacked =====
-          - { iface: i2c,   wiring: default, clk: enabled,  sleep: enabled,  sw0: disabled, magnetometer: enabled,  filename: "SlimeNRF_Tracker_I2C_ProMicro" }
-          - { iface: i2c,   wiring: default, clk: disabled, sleep: disabled, sw0: disabled, magnetometer: enabled,  filename: "SlimeNRF_Tracker_NoSleep_NoCLK_I2C_ProMicro" }
-          - { iface: spi,   wiring: default, clk: enabled,  sleep: enabled,  sw0: enabled,  magnetometer: enabled,  filename: "SlimeNRF_Tracker_SW0_CLK_SPI_ProMicro" }
-          - { iface: smspi, wiring: default, clk: disabled, sleep: enabled,  sw0: disabled, magnetometer: enabled,  filename: "SlimeNRF_Tracker_smSPI_ProMicro" }
-
-          # ===== Stacked =====
-          - { iface: i2c,   wiring: stacked, clk: enabled,  sleep: enabled,  sw0: enabled,  magnetometer: enabled,  filename: "SlimeNRF_Tracker_I2C_StackedSmol" }
-          - { iface: spi,   wiring: stacked, clk: disabled, sleep: disabled, sw0: enabled,  magnetometer: enabled,  filename: "SlimeNRF_Tracker_NoSleep_NoCLK_SPI_StackedSmol" }
-
     steps:
-      - name: 💻 Checkout repo
+      - name: 📦 Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: 🧰 Host deps + west
         run: |
-          set -eux
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
             git cmake ninja-build gperf dfu-util device-tree-compiler \
@@ -50,52 +68,54 @@ jobs:
 
       - name: 🪁 Zephyr SDK
         run: |
-          set -eux
+          set -euxo pipefail
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
       - name: ♻️ Init workspace
         run: |
-          set -eux
+          set -euxo pipefail
           west init -l .
           west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: 🔎 Decide BOARD / APP from matrix
+      - name: 🔎 Decide BOARD / APP
         id: meta
         shell: bash
         run: |
-          set -eux
-          IFACE="${{ matrix.iface }}"
-          WIRING="${{ matrix.wiring }}"
+          set -euxo pipefail
+          IFACE="${{ inputs.iface }}"
+          WIRING="${{ inputs.wiring }}"
+
           BOARD="promicro_uf2/nrf52840/${IFACE}"
           APP="SlimeVR-Tracker-nRF"
           if [[ "$WIRING" == "stacked" ]]; then
             APP="Stacked-SmolSlime"
           fi
+
           echo "board=$BOARD" >> "$GITHUB_OUTPUT"
           echo "app=$APP"     >> "$GITHUB_OUTPUT"
           echo "iface_print=$IFACE" >> "$GITHUB_OUTPUT"
-          echo "Using APP=$APP BOARD=$BOARD"
 
-          test -d "$APP" || { echo "::error::App dir '$APP' not found"; exit 1; }
+          # 檢查專案目錄是否存在（避免 prj.conf 找不到）
+          test -d "$APP" || { echo "::error::App dir '$APP' not found at repo root"; exit 1; }
 
       - name: 📎 (Stacked only) copy fusion libs
         if: ${{ steps.meta.outputs.app == 'Stacked-SmolSlime' }}
         run: |
-          set -eux
+          set -euxo pipefail
           cp -r SlimeVR-Tracker-nRF/vqf-c                  Stacked-SmolSlime/ || true
           cp -r SlimeVR-Tracker-nRF/Fusion                 Stacked-SmolSlime/ || true
           cp -r SlimeVR-Tracker-nRF/NXP-ISSDK-SensorFusion Stacked-SmolSlime/ || true
 
-      - name: 🔧 Generate kconfig overlay (no touching prj.conf)
+      - name: 🔧 Generate Kconfig overlay (不修改 prj.conf)
         run: |
-          set -eux
+          set -euxo pipefail
           : > kconfig_user.conf
           {
-            if [[ "${{ matrix.clk }}" == "enabled" ]];   then echo "CONFIG_USE_SENSOR_CLOCK=y"; else echo "CONFIG_USE_SENSOR_CLOCK=n"; fi
-            if [[ "${{ matrix.sleep }}" == "enabled" ]]; then
+            if [[ "${{ inputs.clk }}" == "enabled" ]];   then echo "CONFIG_USE_SENSOR_CLOCK=y"; else echo "CONFIG_USE_SENSOR_CLOCK=n"; fi
+            if [[ "${{ inputs.sleep }}" == "enabled" ]]; then
               echo "CONFIG_USE_IMU_WAKE_UP=y"
               echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
             else
@@ -104,15 +124,15 @@ jobs:
               echo "CONFIG_SENSOR_LP_TIMEOUT=300000"
               echo "CONFIG_SENSOR_USE_LOW_POWER_2=n"
             fi
-            if [[ "${{ matrix.magnetometer }}" == "enabled" ]]; then echo "CONFIG_SENSOR_USE_MAG=y"; else echo "CONFIG_SENSOR_USE_MAG=n"; fi
-            if [[ "${{ matrix.sw0 }}" == "enabled" ]]; then echo "CONFIG_USER_SW0=y"; else echo "CONFIG_USER_SW0=n"; fi
+            if [[ "${{ inputs.magnetometer }}" == "enabled" ]]; then echo "CONFIG_SENSOR_USE_MAG=y"; else echo "CONFIG_SENSOR_USE_MAG=n"; fi
+            if [[ "${{ inputs.sw0 }}" == "enabled" ]]; then echo "CONFIG_USER_SW0=y"; else echo "CONFIG_USER_SW0=n"; fi
           } >> kconfig_user.conf
           echo "--- kconfig_user.conf ---"
           cat kconfig_user.conf
 
       - name: 🔨 Build
         run: |
-          set -eux
+          set -euxo pipefail
           APP="${{ steps.meta.outputs.app }}"
           BOARD="${{ steps.meta.outputs.board }}"
           mkdir -p build
@@ -121,37 +141,36 @@ jobs:
             -DBOARD_ROOT=../"$APP" \
             -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf
 
-      - name: 📦 Collect artifact
+      - name: 📦 Collect outputs（使用指定檔名）
         run: |
-          set -eux
-          mkdir -p zephyr-workspace/Releases
+          set -euxo pipefail
+          mkdir -p output
           if [[ -f build/zephyr/zephyr.uf2 ]]; then
-            cp build/zephyr/zephyr.uf2 "zephyr-workspace/Releases/${{ matrix.filename }}.uf2"
+            cp build/zephyr/zephyr.uf2 "output/${{ inputs.filename }}.uf2"
           fi
           if [[ -f build/zephyr/zephyr.hex ]]; then
-            cp build/zephyr/zephyr.hex "zephyr-workspace/Releases/${{ matrix.filename }}.hex"
+            cp build/zephyr/zephyr.hex "output/${{ inputs.filename }}.hex"
           fi
-          ls -la zephyr-workspace/Releases
+          ls -la output
 
-      - name: ⏫ Upload per-matrix artifact (for Actions page)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.filename }}
-          path: zephyr-workspace/Releases/*
+      - name: 🧾 Job Summary
+        run: |
+          {
+            echo "## Build Summary"
+            echo ""
+            echo "| Key | Value |"
+            echo "|-----|-------|"
+            echo "| Board | \`promicro_uf2/nrf52840/${{ steps.meta.outputs.iface_print }}\` |"
+            echo "| Wiring | \`${{ inputs.wiring }}\` |"
+            echo "| APP | \`${{ steps.meta.outputs.app }}\` |"
+            echo "| Clock | \`${{ inputs.clk }}\` |"
+            echo "| Sleep | \`${{ inputs.sleep }}\` |"
+            echo "| SW0 | \`${{ inputs.sw0 }}\` |"
+            echo "| Magnetometer | \`${{ inputs.magnetometer }}\` |"
+            echo "| Filename | \`${{ inputs.filename }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: 💻 Checkout (empty – just to own workspace)
-        uses: actions/checkout@v4
-
-      - name: ⬇️ Download all artifacts from matrix
-        uses: actions/download-artifact@v4
-        with:
-          path: collected
-
-      - name: 🧹 Delete existing 'latest' release + tag (clean replace)
+      - name: 🗑️ Delete existing 'latest' release + tag
         uses: dev-drprasad/delete-tag-and-release@v1.0
         with:
           tag_name: latest
@@ -159,17 +178,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🚀 Create fresh 'latest' release with all files
+      - name: 🚀 Create fresh 'latest' release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest Firmware
+          name: Latest Firmware (ProMicro)
           body: |
-            Automated matrix build of ProMicro firmware.
-            - App variants: SlimeVR-Tracker-nRF / Stacked-SmolSlime
-            - Interfaces: i2c / spi / smspi
-            - Toggles: clk / sleep / sw0 / magnetometer
+            Manual build for ProMicro.
+            - App: ${{ steps.meta.outputs.app }}
+            - Interface: ${{ steps.meta.outputs.iface_print }}
+            - Toggles: clk=${{ inputs.clk }}, sleep=${{ inputs.sleep }}, sw0=${{ inputs.sw0 }}, magnetometer=${{ inputs.magnetometer }}
           files: |
-            collected/**/*
+            output/${{ inputs.filename }}.uf2
+            output/${{ inputs.filename }}.hex
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

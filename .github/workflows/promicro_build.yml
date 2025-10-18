@@ -86,7 +86,6 @@ jobs:
           rm -rf Releases
           mkdir -p Releases
 
-      # 先把 nRF52840 不相容的 Kconfig 清掉（避免 DPPI 相關相依問題）
       - name: "🩹 Patch Kconfig for nRF52840 (disable DPPI if present)"
         run: |
           set -euxo pipefail
@@ -192,8 +191,7 @@ jobs:
             --build-dir SlimeVR-Tracker-nRF/build \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT=../SlimeVR-Tracker-nRF \
-            -DSYSBUILD=OFF
+            -DBOARD_ROOT=.. # ⭐️ 修正：路徑從 ../SlimeVR-Tracker-nRF 改為 ..
 
           mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 \
              Releases/${{ inputs.filename }}.uf2

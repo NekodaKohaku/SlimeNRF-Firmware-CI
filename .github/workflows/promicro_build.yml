@@ -1,283 +1,183 @@
-name: Build ProMicro (preset/custom, i2c/spi/smspi)
-
+# 1. 觸發器：修改為僅手動
 on:
   workflow_dispatch:
-    inputs:
-      iface:
-        description: "介面"
-        required: true
-        type: choice
-        options: [i2c, spi, smspi]
-        default: i2c
-      pinmode:
-        description: "腳位模式（preset=預設 / custom=自行填 pins）"
-        required: true
-        type: choice
-        options: [preset, custom]
-        default: preset
-      clk:
-        description: "外部時鐘"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      sleep:
-        description: "睡眠模式"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      sw0:
-        description: "SW0 按鍵"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      magnetometer:
-        description: "磁力計"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      filename:
-        description: "輸出檔名（不含副檔名）"
-        required: true
-        type: string
-        default: "SlimeNRF_Tracker_ProMicro"
-      pins:
-        description: "pinmode=custom 才會用。格式：sda=6,scl=8,mosi=6,miso=24,sck=8,cs=22,int0=17,led=15,clk_pin=20,vcc=31"
-        required: false
-        type: string
-        default: ""
 
-permissions:
-  contents: write
+# 允許一個並行部署
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 權限：保持 write-all 以便上傳 Release
+permissions: write-all
 
 jobs:
   build:
+    # 2. 移除 strategy: matrix:
+    #    不再需要 continue-on-error 或 fail-fast
     runs-on: ubuntu-latest
-    env:
-      ZEPHYR_SDK_INSTALL_DIR: ${{ github.workspace }}/zephyr-sdk-0.17.2
-      ZEPHYR_TOOLCHAIN_VARIANT: zephyr
-
     steps:
-      - name: 📦 Checkout (CI repo)
-        uses: actions/checkout@v4
+      # 3. 移除 "Put commit hash/name" (簡化)
 
-      - name: 🧰 Install deps & west
+      - name: 🧹 Clean Landing Site
         run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            git cmake ninja-build gperf dfu-util device-tree-compiler \
-            python3-pip python3-setuptools python3-wheel wget xz-utils file
-          pip3 install --upgrade west
+          sudo rm -rf zephyr-workspace/SlimeNRF-CI
+      
+      - uses: actions/checkout@v5
+        with:
+          # 依然需要將 repo 放在子目錄中
+          path: zephyr-workspace/SlimeNRF-CI
 
-      - name: 🪁 Install Zephyr SDK 0.17.2
+      - name: 🧰 Install Dependencies + West
         run: |
-          set -euxo pipefail
+          sudo apt-get update && sudo apt install --no-install-recommends \
+          git \
+          cmake \
+          ninja-build \
+          gperf \
+          ccache \
+          dfu-util \
+          device-tree-compiler \
+          wget \
+          python3-dev \
+          python3-pip \
+          python3-setuptools \
+          python3-tk \
+          python3-wheel \
+          python3-venv \
+          xz-utils \
+          file \
+          make \
+          gcc \
+          gcc-multilib \
+          g++-multilib \
+          libsdl2-dev \
+          libmagic1
+
+          python3 -m venv ~/.venv
+          source ~/.venv/bin/activate
+          
+          # 將 venv 路徑加入 CI 環境
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          pip3 install west ninja
+
+      - name: 🪁 Install Zephyr SDK
+        run: |
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
-          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C "${GITHUB_WORKSPACE}"
-          "${ZEPHYR_SDK_INSTALL_DIR}/setup.sh" -c -t arm-zephyr-eabi
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
+          ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
-      - name: ♻️ Init nRF Connect SDK workspace (v2.6.1)
+      - name: ♻️ Initialize Zephyr Workspace
         run: |
-          set -euxo pipefail
-          mkdir -p ncs && cd ncs
-          west init -m https://github.com/nrfconnect/sdk-nrf --mr v2.6.1
+          cd zephyr-workspace
+          sudo rm -rf .west
+          west init -l SlimeNRF-CI
           west update --narrow -o=--depth=1
           west zephyr-export
+
+      - name: 🐍 Install Python Dependencies
+        run: |
+          cd zephyr-workspace
           pip3 install -r zephyr/scripts/requirements.txt
 
-      - name: 📥 Fetch SlimeVR-Tracker-nRF app
+      - name: 🔧 Preparing Build Environment
         run: |
-          set -euxo pipefail
-          cd ncs
-          # 若你有 fork，這行改成你的倉庫 URL
-          git clone --depth 1 https://github.com/SlimeVR/SlimeVR-Tracker-nRF.git SlimeVR-Tracker-nRF
-          test -f SlimeVR-Tracker-nRF/CMakeLists.txt
+          cd zephyr-workspace
+          sudo rm -rf Releases
+          mkdir Releases
 
-      - name: 🔧 Generate kconfig_user.conf (toggles)
+      # 4. 移除 Receiver Build Step
+
+      # 5. 保留與你目標設定相符的修改步驟 (移除 if)
+      #    - clk: "disabled"
+      #    - extraaction: "enabled"
+      #    - magnetometer: "enabled"
+      #    - sleep: "enabled"
+      #    - sw0: "disabled"
+
+      - name: 🔧 Disabling External Clock (clk: disabled)
         run: |
-          set -euxo pipefail
-          cd ncs
-          : > kconfig_user.conf
-          if [ "${{ inputs.clk }}" = "enabled" ]; then
-            echo "CONFIG_USE_SENSOR_CLOCK=y" >> kconfig_user.conf
-          else
-            echo "CONFIG_USE_SENSOR_CLOCK=n" >> kconfig_user.conf
-          fi
-          if [ "${{ inputs.sleep }}" = "enabled" ]; then
-            {
-              echo "CONFIG_USE_IMU_WAKE_UP=y"
-              echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
-            } >> kconfig_user.conf
-          else
-            {
-              echo "CONFIG_USE_IMU_WAKE_UP=n"
-              echo "CONFIG_USE_ACTIVE_TIMEOUT=n"
-              echo "CONFIG_SENSOR_LP_TIMEOUT=300000"
-              echo "CONFIG_SENSOR_USE_LOW_POWER_2=n"
-            } >> kconfig_user.conf
-          fi
-          if [ "${{ inputs.magnetometer }}" = "enabled" ]; then
-            echo "CONFIG_SENSOR_USE_MAG=y" >> kconfig_user.conf
-          else
-            echo "CONFIG_SENSOR_USE_MAG=n" >> kconfig_user.conf
-          fi
-          if [ "${{ inputs.sw0 }}" = "enabled" ]; then
-            echo "CONFIG_USER_SW0=y" >> kconfig_user.conf
-          else
-            echo "CONFIG_USER_SW0=n" >> kconfig_user.conf
-          fi
+          cd zephyr-workspace
+          find='clk-gpios[ \t]='
+          replace='// clk-gpios ='
+          sed -i "s|$find|$replace|g" SlimeNRF-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          sed -i "s|$find|$replace|g" SlimeNRF-Tracker-nRF/boards/xiao_ble.overlay
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
+          sed -i "s|$find|$replace|g" Stacked-SmolSlime/boards/nordic/promicro_uf2/promicro_uf2.dts
+          printf "\n\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\n\nCONFIG_USE_SENSOR_CLOCK=n" >> Stacked-SmolSlime/prj.conf
 
-      - name: 🧩 (pinmode=custom) create DTS overlay
-        if: ${{ inputs.pinmode == 'custom' }}
+      - name: 🔧 Enabling Extra Action (extraaction: enabled)
         run: |
-          set -euxo pipefail
-          cd ncs
-          PINS="${{ inputs.pins }}"
-          getkv() { echo "$PINS" | grep -oE "(^|[,[:space:]])$1=[^,[:space:]]+" | tail -n1 | sed -E "s/.*$1=//"; }
-          norm(){ v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
+          cd zephyr-workspace
+          printf "\n\nCONFIG_USER_EXTRA_ACTIONS=y" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\n\nCONFIG_USER_EXTRA_ACTIONS=y" >> Stacked-SmolSlime/prj.conf
 
-          SDA=$(norm "$(getkv sda)");   SCL=$(norm "$(getkv scl)")
-          MOSI=$(norm "$(getkv mosi)"); MISO=$(norm "$(getkv miso)")
-          SCK=$(norm "$(getkv sck)");   CS=$(norm "$(getkv cs)")
-          INT0=$(norm "$(getkv int0)"); LED=$(norm "$(getkv led)")
-          CLKPIN=$(norm "$(getkv clk_pin)"); VCC=$(norm "$(getkv vcc)")
-
-          : "${SDA:=6}"  ; : "${SCL:=8}"
-          : "${MOSI:=6}" ; : "${MISO:=24}" ; : "${SCK:=8}" ; : "${CS:=22}"
-          : "${INT0:=17}" ; : "${LED:=15}" ; : "${CLKPIN:=20}" ; : "${VCC:=31}"
-
-          IFACE="${{ inputs.iface }}"
-          mkdir -p custom_overlay
-          {
-            echo "/* Auto-generated overlay for ProMicro */"
-            echo "&zephyr_user {"
-            echo "  int0-gpios = <&gpio0 ${INT0} 0>;"
-            echo "  led-gpios  = <&gpio0 ${LED} 0>;"
-            echo "  clk-gpios  = <&gpio0 ${CLKPIN} 0>;"
-            echo "  vcc-gpios  = <&gpio0 ${VCC} GPIO_ACTIVE_HIGH>;"
-            echo "};"
-          } > custom_overlay/custom.overlay
-
-          if [ "$IFACE" = "i2c" ]; then
-            {
-              echo "&i2c0 {"
-              echo "  status = \"okay\";"
-              echo "  pinctrl-0 = <&i2c0_default_custom>;"
-              echo "  pinctrl-1 = <&i2c0_sleep_custom>;"
-              echo "};"
-              echo "&pinctrl {"
-              echo "  i2c0_default_custom: i2c0_default_custom {"
-              echo "    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, ${SDA})>, <NRF_PSEL(TWIM_SCL, 0, ${SCL})>; };"
-              echo "  };"
-              echo "  i2c0_sleep_custom: i2c0_sleep_custom {"
-              echo "    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, ${SDA})>, <NRF_PSEL(TWIM_SCL, 0, ${SCL})>; low-power-enable; };"
-              echo "  };"
-              echo "};"
-            } >> custom_overlay/custom.overlay
-          else
-            {
-              echo "&spi3 {"
-              echo "  status = \"okay\";"
-              echo "  pinctrl-0 = <&spi3_default_custom>;"
-              echo "  pinctrl-1 = <&spi3_sleep_custom>;"
-              echo "  cs-gpios = <&gpio0 ${CS} GPIO_ACTIVE_LOW>;"
-              echo "};"
-              echo "&pinctrl {"
-              echo "  spi3_default_custom: spi3_default_custom {"
-              echo "    group1 {"
-              echo "      psels = <NRF_PSEL(SPIM_MISO, 0, ${MISO})>,"
-              echo "              <NRF_PSEL(SPIM_MOSI, 0, ${MOSI})>,"
-              echo "              <NRF_PSEL(SPIM_SCK, 0, ${SCK})>;"
-              echo "    };"
-              echo "  };"
-              echo "  spi3_sleep_custom: spi3_sleep_custom {"
-              echo "    group1 {"
-              echo "      psels = <NRF_PSEL(SPIM_MISO, 0, ${MISO})>,"
-              echo "              <NRF_PSEL(SPIM_MOSI, 0, ${MOSI})>,"
-              echo "              <NRF_PSEL(SPIM_SCK, 0, ${SCK})>;"
-              echo "      low-power-enable;"
-              echo "    };"
-              echo "  };"
-              echo "};"
-            } >> custom_overlay/custom.overlay
-          fi
-
-      - name: 🔨 Build（把 build 放在 app 目錄內，模仿你原本的腳本）
+      - name: 🔧 Enabling Magnetometer (magnetometer: enabled)
         run: |
-          set -euxo pipefail
-          cd ncs
-          BOARD="promicro_uf2/nrf52840/${{ inputs.iface }}"
-          APP="SlimeVR-Tracker-nRF"
-          rm -rf "${APP}/build"
-          mkdir -p "${APP}/build"
+          cd zephyr-workspace
+          printf "\n\nCONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\n\nCONFIG_SENSOR_USE_MAG=y" >> Stacked-SmolSlime/prj.conf
 
-          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=../${APP} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
-          if [ "${{ inputs.pinmode }}" = "custom" ]; then
-            EXTRA_ARGS="${EXTRA_ARGS} -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay"
-          fi
+      - name: 🔧 Enabling Sleep (sleep: enabled)
+        run: |
+          cd zephyr-workspace
+          printf "\n\nCONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\n\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\n\nCONFIG_USE_IMU_WAKE_UP=y" >> Stacked-SmolSlime/prj.conf
+          printf "\n\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> Stacked-SmolSlime/prj.conf
 
+      - name: 🔧 Disabling SW0 Button (sw0: disabled)
+        run: |
+          cd zephyr-workspace
+          find='sw0[ \t]='
+          replace='// sw0 ='
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
+          sed -i "s|$find|$replace|g" Stacked-SmolSlime/boards/nordic/promicro_uf2/promicro_uf2.dts
+
+      # 6. 移除其他所有 'Enabling/Disabling' 步驟
+
+      # 7. 保留 SlimeVR-Tracker-nRF build (非 Stacked)
+      - name: 🔨 Build SlimeNRF_Tracker_I2C_ProMicro
+        # if: (已移除, 因為已鎖定 type: tracker 且 filename 不含 Stacked)
+        run: |
+          cd zephyr-workspace
+          sudo rm -rf SlimeVR-Tracker-nRF/build
+          mkdir SlimeVR-Tracker-nRF/build
+
+          # 8. 將 matrix 變數替換為你的固定值
           west build \
-            --board "$BOARD" \
-            --pristine=always "${APP}" \
-            --build-dir "${APP}/build" \
-            -- ${EXTRA_ARGS}
+              --board "promicro_uf2/nrf52840/i2c" \
+              --pristine=always SlimeVR-Tracker-nRF \
+              --build-dir SlimeVR-Tracker-nRF/build \
+              -- \
+              -DNCS_TOOLCHAIN_VERSION=NONE \
+              -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
-      - name: 🧾 Job Summary
-        run: |
-          {
-            echo "## Build Summary"
-            echo ""
-            echo "| Key | Value |"
-            echo "|-----|-------|"
-            echo "| Board | \`promicro_uf2/nrf52840/${{ inputs.iface }}\` |"
-            echo "| Pin Mode | \`${{ inputs.pinmode }}\` |"
-            echo "| Clock | \`${{ inputs.clk }}\` |"
-            echo "| Sleep | \`${{ inputs.sleep }}\` |"
-            echo "| SW0 | \`${{ inputs.sw0 }}\` |"
-            echo "| Magnetometer | \`${{ inputs.magnetometer }}\` |"
-            echo "| Filename | \`${{ inputs.filename }}\` |"
-            if [ "${{ inputs.pinmode }}" = "custom" ]; then
-              echo "| Pins | \`${{ inputs.pins }}\` |"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
 
-      - name: 📦 Collect outputs
-        run: |
-          set -euxo pipefail
-          cd ncs
-          mkdir -p output
-          # 兩種可能的輸出結構都兼容
-          for CAND in \
-            SlimeVR-Tracker-nRF/build/zephyr/zephyr.uf2 \
-            SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 ; do
-            if [ -f "$CAND" ]; then cp "$CAND" "output/${{ inputs.filename }}.uf2"; break; fi
-          done
-          for CAND in \
-            SlimeVR-Tracker-nRF/build/zephyr/zephyr.hex \
-            SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.hex ; do
-            if [ -f "$CAND" ]; then cp "$CAND" "output/${{ inputs.filename }}.hex"; break; fi
-          done
+      # 9. 移除 Stacked-SmolSlime build 步驟
 
-      - name: 🚀 Release to 'latest'
-        uses: softprops/action-gh-release@v2
+      - name: 💾 Upload Artifact
+        # 8. 將 matrix 變數替換為你的固定值
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: latest
-          name: "Latest Firmware (ProMicro)"
+          name: SlimeNRF_Tracker_I2C_ProMicro.uf2
+          path: zephyr-workspace/Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
+
+      - name: 📁 Create/Update Github Release
+        uses: mini-bomba/create-github-release@v1.2.0
+        with:
+          # 9. 使用 GITHUB_TOKEN (標準) 而非 gh_token (自訂)
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: "latest"
+          prerelease: false
+          name: "Latest Firmware"
           body: |
-            ProMicro manual build.
-
-            - Interface: `${{ inputs.iface }}`
-            - Pin mode: `${{ inputs.pinmode }}`
-            - Toggles: clk=${{ inputs.clk }}, sleep=${{ inputs.sleep }}, sw0=${{ inputs.sw0 }}, mag=${{ inputs.magnetometer }}
-            - Filename: `${{ inputs.filename }}`
-
-            Download assets below.
+            Successful build of the latest SlimeNRF Firmware. (Automated)
+          
+          # 8. 將 matrix 變數替換為你的固定值
           files: |
-            ncs/output/${{ inputs.filename }}.uf2
-            ncs/output/${{ inputs.filename }}.hex
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            zephyr-workspace/Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
+          clear_attachments: false

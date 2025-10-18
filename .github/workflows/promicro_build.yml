@@ -154,4 +154,5 @@ jobs:
             Board: ${{ env.BOARD }} (Conn: ${{ env.CONN_UPPER }})
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
-          clear_attachments: false
+          clear_attachments: true      # ← 先刪掉該 release 下所有舊附件，再上傳新的
+

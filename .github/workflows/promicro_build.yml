@@ -45,7 +45,7 @@ on:
         type: string
         default: "SlimeNRF_Tracker_ProMicro"
       pins:
-        description: "自訂腳位（pinmode=custom 才會用），格式：sda=6,scl=8,mosi=6,miso=24,sck=8,cs=22,int0=17,led=15,clk_pin=20,vcc=31"
+        description: "pinmode=custom 才會用。格式：sda=6,scl=8,mosi=6,miso=24,sck=8,cs=22,int0=17,led=15,clk_pin=20,vcc=31"
         required: false
         type: string
         default: ""
@@ -56,66 +56,51 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ZEPHYR_SDK_INSTALL_DIR: ${{ github.workspace }}/zephyr-sdk-0.17.2
+      ZEPHYR_TOOLCHAIN_VARIANT: zephyr
 
     steps:
-      - name: 📦 Checkout
+      - name: 📦 Checkout (CI repo)
         uses: actions/checkout@v4
 
-      - name: 🧰 Install deps
+      - name: 🧰 Install deps & west
         run: |
-          set -eux
-          sudo apt-get update && sudo apt-get install -y \
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
             git cmake ninja-build gperf dfu-util device-tree-compiler \
-            python3-pip python3-setuptools python3-wheel wget xz-utils
+            python3-pip python3-setuptools python3-wheel wget xz-utils file
           pip3 install --upgrade west
 
-      - name: 🪁 Zephyr SDK
+      - name: 🪁 Install Zephyr SDK 0.17.2
         run: |
-          set -eux
+          set -euxo pipefail
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
-          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
-          ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C "${GITHUB_WORKSPACE}"
+          "${ZEPHYR_SDK_INSTALL_DIR}/setup.sh" -c -t arm-zephyr-eabi
 
-      - name: ♻️ Init workspace (west)
+      - name: ♻️ Init nRF Connect SDK workspace (v2.6.1)
         run: |
-          set -eux
-          west init -l .
+          set -euxo pipefail
+          mkdir -p ncs && cd ncs
+          west init -m https://github.com/nrfconnect/sdk-nrf --mr v2.6.1
           west update --narrow -o=--depth=1
           west zephyr-export
-          echo "ZEPHYR_BASE=$(pwd)/zephyr" >> $GITHUB_ENV
-          echo "ZEPHYR_TOOLCHAIN_VARIANT=zephyr" >> $GITHUB_ENV
-          echo "ZEPHYR_SDK_INSTALL_DIR=$HOME/zephyr-sdk-0.17.2" >> $GITHUB_ENV
-          echo "$HOME/zephyr-sdk-0.17.2/arm-zephyr-eabi/bin" >> $GITHUB_PATH
+          pip3 install -r zephyr/scripts/requirements.txt
 
-      - name: 📥 Ensure SlimeVR-Tracker-nRF exists
+      - name: 📥 Fetch SlimeVR-Tracker-nRF app
         run: |
-          set -eux
-          if [ ! -d SlimeVR-Tracker-nRF ]; then
-            git clone --depth 1 https://github.com/SlimeVR/SlimeVR-Tracker-nRF.git SlimeVR-Tracker-nRF
-          fi
+          set -euxo pipefail
+          cd ncs
+          # 若你改成 fork，這行 URL 換成你的
+          git clone --depth 1 https://github.com/SlimeVR/SlimeVR-Tracker-nRF.git SlimeVR-Tracker-nRF
+          test -f SlimeVR-Tracker-nRF/CMakeLists.txt
 
-      - name: 🔎 Detect Zephyr app dir & board root
-        id: path
+      - name: 🔧 Generate kconfig_user.conf (toggles)
         run: |
-          set -eux
-          APP_DIR="SlimeVR-Tracker-nRF"
-          # 若內層存在，更可能是實際 app 目錄
-          if [ -f "SlimeVR-Tracker-nRF/SlimeVR-Tracker-nRF/CMakeLists.txt" ]; then
-            APP_DIR="SlimeVR-Tracker-nRF/SlimeVR-Tracker-nRF"
-          fi
-          # 確認這個 CMakeLists.txt 看起來像 Zephyr app
-          if ! grep -Eq 'find_package\(Zephyr|boilerplate\.cmake' "${APP_DIR}/CMakeLists.txt"; then
-            echo "::error ::${APP_DIR}/CMakeLists.txt 不是 Zephyr App（缺少 find_package(Zephyr) 或 boilerplate）"
-            exit 1
-          fi
-          APP_ROOT="$(dirname "$APP_DIR")"  # 用於 BOARD_ROOT 指向含 boards/ 的上層
-          echo "app_dir=${APP_DIR}"   >> "$GITHUB_OUTPUT"
-          echo "app_root=${APP_ROOT}" >> "$GITHUB_OUTPUT"
-          echo "Detected APP_DIR=$APP_DIR, APP_ROOT=$APP_ROOT"
-
-      - name: 🔧 Kconfig toggles → kconfig_user.conf
-        run: |
-          set -eux
+          set -euxo pipefail
+          cd ncs
           : > kconfig_user.conf
           if [ "${{ inputs.clk }}" = "enabled" ]; then
             echo "CONFIG_USE_SENSOR_CLOCK=y" >> kconfig_user.conf
@@ -146,14 +131,14 @@ jobs:
             echo "CONFIG_USER_SW0=n" >> kconfig_user.conf
           fi
 
-      - name: 🧩 (custom 才產生) DTS overlay
+      - name: 🧩 (pinmode=custom) create DTS overlay
         if: ${{ inputs.pinmode == 'custom' }}
         run: |
-          set -eux
+          set -euxo pipefail
+          cd ncs
           PINS="${{ inputs.pins }}"
-
           getkv() { echo "$PINS" | grep -oE "(^|[,[:space:]])$1=[^,[:space:]]+" | tail -n1 | sed -E "s/.*$1=//"; }
-          norm() { v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
+          norm(){ v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
 
           SDA=$(norm "$(getkv sda)");   SCL=$(norm "$(getkv scl)")
           MOSI=$(norm "$(getkv mosi)"); MISO=$(norm "$(getkv miso)")
@@ -166,7 +151,6 @@ jobs:
           : "${INT0:=17}" ; : "${LED:=15}" ; : "${CLKPIN:=20}" ; : "${VCC:=31}"
 
           IFACE="${{ inputs.iface }}"
-
           mkdir -p custom_overlay
           {
             echo "/* Auto-generated overlay for ProMicro */"
@@ -222,31 +206,20 @@ jobs:
             } >> custom_overlay/custom.overlay
           fi
 
-      - name: 🔨 Build (west → fallback raw CMake)
-        env:
-          APP_DIR: ${{ steps.path.outputs.app_dir }}
-          APP_ROOT: ${{ steps.path.outputs.app_root }}
+      - name: 🔨 Build (west only)
         run: |
           set -euxo pipefail
+          cd ncs
           BOARD="promicro_uf2/nrf52840/${{ inputs.iface }}"
+          APP_DIR="$(pwd)/SlimeVR-Tracker-nRF"
           mkdir -p build
 
-          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=../${APP_ROOT} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
+          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=${APP_DIR} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
           if [ "${{ inputs.pinmode }}" = "custom" ]; then
             EXTRA_ARGS="${EXTRA_ARGS} -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay"
           fi
 
-          if ! west build --board "$BOARD" "$APP_DIR" --pristine=always -d build -- ${EXTRA_ARGS}; then
-            echo ">>> west failed, fallback to raw CMake"
-            rm -rf build
-            cmake -B build -GNinja \
-              -DBOARD="$BOARD" \
-              -DBOARD_ROOT="${APP_ROOT}" \
-              -DZEPHYR_BASE="$ZEPHYR_BASE" \
-              ${EXTRA_ARGS} \
-              -S "$APP_DIR"
-            ninja -C build
-          fi
+          west build --board "$BOARD" "$APP_DIR" --pristine=always -d build -- ${EXTRA_ARGS}
 
       - name: 🧾 Job Summary
         run: |
@@ -269,7 +242,8 @@ jobs:
 
       - name: 📦 Collect outputs
         run: |
-          set -eux
+          set -euxo pipefail
+          cd ncs
           mkdir -p output
           test -f build/zephyr/zephyr.uf2 && cp build/zephyr/zephyr.uf2 "output/${{ inputs.filename }}.uf2" || true
           test -f build/zephyr/zephyr.hex && cp build/zephyr/zephyr.hex "output/${{ inputs.filename }}.hex" || true
@@ -289,7 +263,7 @@ jobs:
 
             Download assets below.
           files: |
-            output/${{ inputs.filename }}.uf2
-            output/${{ inputs.filename }}.hex
+            ncs/output/${{ inputs.filename }}.uf2
+            ncs/output/${{ inputs.filename }}.hex
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

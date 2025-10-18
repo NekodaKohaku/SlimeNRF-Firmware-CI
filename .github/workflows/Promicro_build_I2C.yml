@@ -33,10 +33,6 @@ on:
         type: choice
         options: [enabled, disabled]
         default: disabled
-      pinmap_json:
-        description: 'Pins JSON, e.g. {"i2c":{"sda":"P0.06","scl":"P0.08"},"pwm0":"P0.15","sw0":"P1.00","led":"P0.15","clk":"P0.20","spi3":false}'
-        required: false
-        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -120,103 +116,6 @@ jobs:
         run: |
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
-
-      # ===== Optional: generate devicetree overlay from pin JSON =====
-      - name: Generate devicetree overlay from pin JSON (optional)
-        shell: bash
-        env:
-          PINMAP_JSON: ${{ inputs.pinmap_json }}
-        run: |
-          set -euo pipefail
-          cd zephyr-workspace
-
-          if [[ -z "${PINMAP_JSON:-}" ]]; then
-            echo "No PIN JSON provided; skip overlay."
-            exit 0
-          fi
-
-          # 先把 Python 程式寫成檔案，再執行，避免 YAML 對 here-doc 縮排敏感
-          cat > gen_overlay.py <<'PY'
-import os, json, re, sys
-
-pinmap = os.environ.get("PINMAP_JSON","").strip()
-try:
-    data = json.loads(pinmap)
-except Exception as e:
-    print("Invalid pinmap_json:", e); sys.exit(1)
-
-def parse_pin(s):
-    m = re.fullmatch(r'P?([01])\.(\d{1,2})', s) or re.fullmatch(r'(\d{1,2})', s)
-    if not m: raise ValueError(f"bad pin '{s}'")
-    if len(m.groups()) == 2:
-        port, pin = int(m.group(1)), int(m.group(2))
-    else:
-        port, pin = 0, int(m.group(1))
-    if port not in (0,1): raise ValueError("port must be 0 or 1")
-    if port == 1 and not (0 <= pin <= 15): raise ValueError("P1 pin 0..15")
-    if port == 0 and not (0 <= pin <= 31): raise ValueError("P0 pin 0..31")
-    return port, pin
-
-out = []
-
-def emit_i2c(d):
-    sda, scl = d.get("sda"), d.get("scl")
-    if not (sda and scl): return
-    sp, sn = parse_pin(sda); tp, tn = parse_pin(scl)
-    out.append(f"&i2c0_default {{ group1 {{ psels = <NRF_PSEL(TWIM_SDA, {sp}, {sn})>, <NRF_PSEL(TWIM_SCL, {tp}, {tn})>; }}; }};")
-    out.append(f"&i2c0_sleep   {{ group1 {{ psels = <NRF_PSEL(TWIM_SDA, {sp}, {sn})>, <NRF_PSEL(TWIM_SCL, {tp}, {tn})>; }}; }};")
-
-def emit_pwm(label, pin):
-    p,n = parse_pin(pin)
-    out.append(f"&{label}_default {{ group1 {{ psels = <NRF_PSEL(PWM_OUT0, {p}, {n})>; }}; }};")
-    out.append(f"&{label}_sleep   {{ group1 {{ psels = <NRF_PSEL(PWM_OUT0, {p}, {n})>; }}; }};")
-
-def emit_spi3(d):
-    if d is False:
-        out.append('&spi3 { status = "disabled"; };'); return
-    miso, mosi, sck, cs = d.get("miso"), d.get("mosi"), d.get("sck"), d.get("cs")
-    if miso and mosi and sck:
-        mp,mn = parse_pin(miso); op,on = parse_pin(mosi); kp,kn = parse_pin(sck)
-        out.append(f"&spi3_default {{ group1 {{ psels = <NRF_PSEL(SPIM_MISO, {mp}, {mn})>, <NRF_PSEL(SPIM_MOSI, {op}, {on})>, <NRF_PSEL(SPIM_SCK, {kp}, {kn})>; }}; }};")
-        out.append(f"&spi3_sleep   {{ group1 {{ psels = <NRF_PSEL(SPIM_MISO, {mp}, {mn})>, <NRF_PSEL(SPIM_MOSI, {op}, {on})>, <NRF_PSEL(SPIM_SCK, {kp}, {kn})>; }}; }};")
-    if cs:
-        cp,cn = parse_pin(cs); out.append(f"&spi3 {{ cs-gpios = <&gpio{cp} {cn} GPIO_ACTIVE_LOW>; }};")
-
-def emit_sw0(pin):
-    p,n = parse_pin(pin)
-    out.append(f"&button0 {{ gpios = <&gpio{p} {n} (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; }};")
-
-def emit_led(pin):
-    p,n = parse_pin(pin)
-    # 直接用根節點覆寫既有屬性，避免 &{/path} 的大括號轉義干擾
-    out.append(f"/ {{ zephyr,user {{ led-gpios = <&gpio{p} {n} GPIO_OPEN_SOURCE>; }}; }};")
-
-def emit_clk(pin):
-    p,n = parse_pin(pin)
-    out.append(f"/ {{ zephyr,user {{ clk-gpios = <&gpio{p} {n} GPIO_OPEN_DRAIN>; }}; }};")
-
-if "i2c"  in data: emit_i2c(data["i2c"])
-if "pwm0" in data: emit_pwm("pwm0", data["pwm0"])
-if "pwm1" in data: emit_pwm("pwm1", data["pwm1"])
-if "spi3" in data: emit_spi3(data["spi3"])
-if "sw0"  in data: emit_sw0(data["sw0"])
-if "led"  in data: emit_led(data["led"])
-if "clk"  in data: emit_clk(data["clk"])
-
-if not out:
-    print("No overlay content derived; skip."); sys.exit(0)
-
-overlay = "SlimeVR-Tracker-nRF/promicro_pins.overlay"
-with open(overlay, "w") as f:
-    f.write("/* Auto-generated from pinmap_json */\n" + "\n".join(out) + "\n")
-print("Wrote overlay:", overlay)
-PY
-
-          python3 gen_overlay.py
-
-          if [ -f zephyr-workspace/SlimeVR-Tracker-nRF/promicro_pins.overlay ]; then
-            echo "DTC_OVERLAY_FILE=$(pwd)/zephyr-workspace/SlimeVR-Tracker-nRF/promicro_pins.overlay" >> $GITHUB_ENV
-          fi
 
       # ===== 功能開關：外接時鐘 =====
       - name: Enable External Sensor Clock
@@ -304,19 +203,13 @@ PY
           rm -rf SlimeVR-Tracker-nRF/build
           mkdir -p SlimeVR-Tracker-nRF/build
 
-          EXTRA_OPTS=""
-          if [ -n "${DTC_OVERLAY_FILE:-}" ]; then
-            EXTRA_OPTS="-DDTC_OVERLAY_FILE=$DTC_OVERLAY_FILE"
-          fi
-
           west build \
             --board "$BOARD" \
             --pristine=always SlimeVR-Tracker-nRF \
             --build-dir SlimeVR-Tracker-nRF/build \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT=../SlimeVR-Tracker-nRF \
-            $EXTRA_OPTS
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
           SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
           SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"

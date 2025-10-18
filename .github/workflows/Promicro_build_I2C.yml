@@ -3,15 +3,56 @@ name: Build SlimeNRF Tracker (I2C)
 on:
   workflow_dispatch:
     inputs:
-      magnetometer:   { description: "Magnetometer", type: choice, options: [enabled, disabled], default: enabled,  required: true }
-      sleep:          { description: "Sleep (IMU wake + active timeout)", type: choice, options: [enabled, disabled], default: disabled, required: true }
-      sensor_clock:   { description: "External Sensor Clock", type: choice, options: [enabled, disabled], default: enabled,  required: true }
-      extra_actions:  { description: "User Extra Actions", type: choice, options: [enabled, disabled], default: disabled, required: true }
-      sw0_button:     { description: "SW0 Button", type: choice, options: [enabled, disabled], default: disabled, required: true }
-      # JSON: 例如 {"sda":"P0.6","scl":"P0.8"}
-      i2c_pins:       { description: "I2C pins JSON (sda,scl)", type: string, default: "", required: false }
-      # JSON: 例如 {"clk":"P0.20","int":"P0.17","sw0":"P1.0"}
-      misc_pins:      { description: "Misc pins JSON (clk,int,sw0)", type: string, default: "", required: false }
+      magnetometer:
+        description: "Magnetometer"
+        required: true
+        type: choice
+        options:
+          - enabled
+          - disabled
+        default: enabled
+      sleep:
+        description: "Sleep (IMU wake + active timeout)"
+        required: true
+        type: choice
+        options:
+          - enabled
+          - disabled
+        default: disabled
+      sensor_clock:
+        description: "External Sensor Clock"
+        required: true
+        type: choice
+        options:
+          - enabled
+          - disabled
+        default: enabled
+      extra_actions:
+        description: "User Extra Actions"
+        required: true
+        type: choice
+        options:
+          - enabled
+          - disabled
+        default: disabled
+      sw0_button:
+        description: "SW0 Button"
+        required: true
+        type: choice
+        options:
+          - enabled
+          - disabled
+        default: disabled
+      i2c_pins:
+        description: "I2C pins JSON (sda,scl). ex: {\"sda\":\"P0.6\",\"scl\":\"P0.8\"}"
+        required: false
+        type: string
+        default: ""
+      misc_pins:
+        description: "Misc pins JSON (clk,int,sw0). ex: {\"clk\":\"P0.20\",\"int\":\"P0.17\",\"sw0\":\"P1.0\"}"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -61,7 +102,7 @@ jobs:
       - name: Install Zephyr SDK
         run: |
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
-       	  tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
       - name: Initialize Zephyr Workspace
@@ -118,7 +159,7 @@ jobs:
           set -eo pipefail
           cd zephyr-workspace/SlimeVR-Tracker-nRF
 
-          # 自動偵測 Zephyr pinctrl 標頭（不同版本檔名不一樣）
+          # pick the right pinctrl header across Zephyr versions
           INC="zephyr/dt-bindings/pinctrl/nrf-pinctrl.h"
           if [ ! -f "../zephyr/include/${INC}" ]; then
             INC="zephyr/dt-bindings/pinctrl/nordic-nrf-pinctrl.h"
@@ -145,7 +186,6 @@ jobs:
           OVERLAY+="#include <${INC}>\n"
           OVERLAY+="#include <zephyr/dt-bindings/gpio/gpio.h>\n"
 
-          # ---- I2C pinctrl 覆寫（若有提供腳位）----
           if [ -n "$SDA" ] || [ -n "$SCL" ]; then
             [ -n "$SDA" ] && parse_pin "$SDA" && SDA_PORT="$PORT" && SDA_PIN="$PIN"
             [ -n "$SCL" ] && parse_pin "$SCL" && SCL_PORT="$PORT" && SCL_PIN="$PIN"
@@ -166,24 +206,24 @@ jobs:
             OVERLAY+="\n&i2c0 { pinctrl-0 = <&i2c0_user_default>; pinctrl-1 = <&i2c0_user_sleep>; };\n"
           fi
 
-          # ---- zephyr,user 的 GPIO（CLK/INT/SW0）----
           if [ -n "$CLK" ] || [ -n "$INT" ]; then
             OVERLAY+="\n/ { zephyr,user {\n"
             if [ -n "$CLK" ]; then parse_pin "$CLK"; OVERLAY+="  clk-gpios = <&gpio${PORT} ${PIN} GPIO_OPEN_DRAIN>;\n"; fi
             if [ -n "$INT" ]; then parse_pin "$INT"; OVERLAY+="  int0-gpios = <&gpio${PORT} ${PIN} 0>;\n"; fi
             OVERLAY+="}; };\n"
           fi
+
           if [ -n "$SW0" ]; then
             parse_pin "$SW0"
             OVERLAY+="\n&button0 { gpios = <&gpio${PORT} ${PIN} (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; };\n"
           fi
 
-          # ---- retained_mem 區塊（若板檔尚未定義）----
+          # add retained_mem if board doesn't define it
           if ! grep -R -q "retained_mem:" boards/nordic/promicro_uf2 2>/dev/null; then
             OVERLAY+="\n/ {\n  reserved-memory {\n    #address-cells = <1>;\n    #size-cells = <1>;\n    ranges;\n"
             OVERLAY+="    retained_mem: memory@2003f000 {\n"
             OVERLAY+="      compatible = \"zephyr,memory-region\";\n"
-            OVERLAY+="      reg = <0x2003f000 0x1000>; /* 4KB at the end of 256KB SRAM */\n"
+            OVERLAY+="      reg = <0x2003f000 0x1000>;\n"
             OVERLAY+="      zephyr,memory-region = \"RAM\";\n"
             OVERLAY+="    };\n  };\n};\n"
           fi
@@ -216,7 +256,9 @@ jobs:
           mkdir -p SlimeVR-Tracker-nRF/build
 
           EXTRA_OPT=""
-          [ -s "SlimeVR-Tracker-nRF/ci_pins.overlay" ] && EXTRA_OPT="-DDTC_OVERLAY_FILE=$(pwd)/SlimeVR-Tracker-nRF/ci_pins.overlay"
+          if [ -s "SlimeVR-Tracker-nRF/ci_pins.overlay" ]; then
+            EXTRA_OPT="-DDTC_OVERLAY_FILE=$(pwd)/SlimeVR-Tracker-nRF/ci_pins.overlay"
+          fi
 
           west build \
             --board "$BOARD" \

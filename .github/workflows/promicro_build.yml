@@ -8,13 +8,13 @@ on:
         required: true
         type: choice
         options: [enabled, disabled]
-        default: disabled
+        default: enabled
       sleep:
         description: "睡眠模式"
         required: true
         type: choice
         options: [enabled, disabled]
-        default: enabled
+        default: disabled
       sw0:
         description: "SW0 按鍵"
         required: true

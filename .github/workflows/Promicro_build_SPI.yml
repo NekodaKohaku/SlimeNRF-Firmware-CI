@@ -99,16 +99,27 @@ jobs:
         run: |
           echo "BOARD=${BOARD_PREFIX}spi" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}SPI_ProMicro" >> $GITHUB_ENV
-          echo "CONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: Generate DTS overlay from env (SPI)
+      - name: Sanity check workspace
+        run: |
+          ls -la zephyr-workspace
+          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
+
+      - name: Force UF2 output (Kconfig)
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_BUILD_OUTPUT_UF2=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Apply pin mapping to DTS
         shell: bash
         run: |
           set -euo pipefail
           cd zephyr-workspace
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
 
           parse_pin() {
-            local s="$1" port pin
+            local s="$1"
+            local port pin
             if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then
               port="${BASH_REMATCH[1]}"; pin="${BASH_REMATCH[2]}"
             elif [[ $s =~ ^([0-9]{1,2})$ ]]; then
@@ -116,73 +127,141 @@ jobs:
             else
               echo "Invalid pin: $s" >&2; exit 1
             fi
-            pin=$((10#$pin))
-            [[ $port -eq 0 || $pin -le 15 ]] || { echo "P1.* は 0..15 のみ: P${port}.${pin}" >&2; exit 1; }
+            pin=$((10#$pin))  # 先頭ゼロ対策（08/09 → 10進数）
             echo "$port $pin"
           }
 
-          read MISO_P MISO_N < <(parse_pin "${MISO}")
-          read MOSI_P MOSI_N < <(parse_pin "${MOSI}")
-          read  SCK_P  SCK_N < <(parse_pin "${SCK}")
-          read   CS_P   CS_N < <(parse_pin "${CS}")
-          read PWM0_P PWM0_N < <(parse_pin "${PWM0}")
-          read  SW0_P  SW0_N < <(parse_pin "${SW0}")
-          read  LED_P  LED_N < <(parse_pin "${LED}")
-          read  CLK_P  CLK_N < <(parse_pin "${CLK}")
-          read  INT_P  INT_N < <(parse_pin "${INT}")
-          read  VCC_P  VCC_N < <(parse_pin "${VCC}")
+          read MISO_PORT MISO_PIN < <(parse_pin "${MISO}")
+          read MOSI_PORT MOSI_PIN < <(parse_pin "${MOSI}")
+          read  SCK_PORT  SCK_PIN < <(parse_pin "${SCK}")
+          read   CS_PORT   CS_PIN < <(parse_pin "${CS}")
+          read PWM0_PORT PWM0_PIN < <(parse_pin "${PWM0}")
+          read  SW0_PORT  SW0_PIN < <(parse_pin "${SW0}")
+          read  LED_PORT  LED_PIN < <(parse_pin "${LED}")
+          read  CLK_PORT  CLK_PIN < <(parse_pin "${CLK}")
+          read  INT_PORT  INT_PIN < <(parse_pin "${INT}")
+          read  VCC_PORT  VCC_PIN < <(parse_pin "${VCC}")
 
-          OVERLAY="SlimeVR-Tracker-nRF/promicro_pins.overlay"
-          {
-            echo "/* Auto-generated from workflow env (SPI) */"
-            echo "&pinctrl {"
-            echo "  spi3_default: spi3_default { group1 {"
-            echo "    psels = <NRF_PSEL(SPIM_MISO, ${MISO_P}, ${MISO_N})>,"
-            echo "            <NRF_PSEL(SPIM_MOSI, ${MOSI_P}, ${MOSI_N})>,"
-            echo "            <NRF_PSEL(SPIM_SCK,  ${SCK_P},  ${SCK_N})>;"
-            echo "  }; };"
-            echo "  spi3_sleep: spi3_sleep { group1 {"
-            echo "    psels = <NRF_PSEL(SPIM_MISO, ${MISO_P}, ${MISO_N})>,"
-            echo "            <NRF_PSEL(SPIM_MOSI, ${MOSI_P}, ${MOSI_N})>,"
-            echo "            <NRF_PSEL(SPIM_SCK,  ${SCK_P},  ${SCK_N})>;"
-            echo "  }; };"
-            echo "};"
-            echo ""
-            echo "&spi3 { cs-gpios = <&gpio${CS_P} ${CS_N} GPIO_ACTIVE_LOW>; };"
-            echo "&pwm0_default { group1 { psels = <NRF_PSEL(PWM_OUT0, ${PWM0_P}, ${PWM0_N})>; }; };"
-            echo "&pwm0_sleep   { group1 { psels = <NRF_PSEL(PWM_OUT0, ${PWM0_P}, ${PWM0_N})>; }; };"
-            if [[ "${SW0_BUTTON}" == "enabled" ]]; then
-              echo "&button0 { gpios = <&gpio${SW0_P} ${SW0_N} (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; };"
+          for P in MISO MOSI SCK CS PWM0 SW0 LED CLK INT VCC; do
+            eval port=\$${P}_PORT pin=\$${P}_PIN
+            if [[ $port -eq 1 && $pin -gt 15 ]]; then
+              echo "$P: Port 1 supports only 0..15"; exit 1
             fi
-            echo "/ { zephyr,user {"
-            echo "  led-gpios = <&gpio${LED_P} ${LED_N} GPIO_OPEN_SOURCE>;"
-            if [[ "${SENSOR_CLOCK}" == "enabled" ]]; then
-              echo "  clk-gpios = <&gpio${CLK_P} ${CLK_N} GPIO_OPEN_DRAIN>;"
-            fi
-            echo "  int0-gpios = <&gpio${INT_P} ${INT_N} GPIO_ACTIVE_HIGH>;"
-            echo "  vcc-gpios  = <&gpio${VCC_P} ${VCC_N} GPIO_ACTIVE_HIGH>;"
-            echo "}; };"
-          } > "$OVERLAY"
+          done
 
-          echo "DTC_OVERLAY_FILE=$(pwd)/$OVERLAY" >> $GITHUB_ENV
-          echo "Wrote overlay: $OVERLAY"
-          sed -n '1,120p' "$OVERLAY"
+          # --- spi3_default：psels を「整段削除→単行で挿入」---
+          sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
+          sed -i -E "/^[[:space:]]*spi3_default:[[:space:]]*spi3_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+          \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+          }" "$DTS"
 
-      - name: Feature toggles
+          # --- spi3_sleep：同様に処理 ---
+          sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/psels[[:space:]]*=/,/;/d}" "$DTS"
+          sed -i -E "/^[[:space:]]*spi3_sleep:[[:space:]]*spi3_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/group1[[:space:]]*\\{/a\\
+          \\t\\t\\tpsels = <NRF_PSEL(SPIM_MISO, ${MISO_PORT}, ${MISO_PIN})>, <NRF_PSEL(SPIM_MOSI, ${MOSI_PORT}, ${MOSI_PIN})>, <NRF_PSEL(SPIM_SCK, ${SCK_PORT}, ${SCK_PIN})>\\;
+          }" "$DTS"
+
+          # --- &spi3 の cs-gpios：既存を削除→新規で挿入 ---
+          sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/,/^[[:space:]]*\\};/ {/cs-gpios[[:space:]]*=/,/;/d}" "$DTS"
+          sed -i -E "/^[[:space:]]*&spi3[[:space:]]*\\{/{n; a\\
+          \\tcs-gpios = <\\&gpio${CS_PORT} ${CS_PIN} GPIO_ACTIVE_LOW>\\;
+          }" "$DTS"
+
+          # PWM0 default/sleep（単行なので上書き置換でOK）
+          sed -i -E \
+            -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            "$DTS"
+
+          # SW0（buttons ノード）
+          sed -i -E \
+            "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" \
+            "$DTS"
+
+          # LED / CLK / INT / VCC（zephyr,user）
+          sed -i -E \
+            "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
+              s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#; \
+              s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
+              s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#; \
+              s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#; \
+              s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#; \
+            }" \
+            "$DTS"
+
+      - name: Enable External Sensor Clock
+        if: env.SENSOR_CLOCK == 'enabled'
         run: |
           cd zephyr-workspace
-          [[ "${EXTRA_ACTIONS}" == "enabled" ]] && echo "CONFIG_USER_EXTRA_ACTIONS=y" >> SlimeVR-Tracker-nRF/prj.conf || echo "CONFIG_USER_EXTRA_ACTIONS=n" >> SlimeVR-Tracker-nRF/prj.conf
-          [[ "${MAGNETOMETER}"  == "enabled" ]] && echo "CONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf || echo "CONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
-          if [[ "${SLEEP}" == "enabled" ]]; then
-            echo "CONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
-            echo "CONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
-          else
-            echo "CONFIG_USE_IMU_WAKE_UP=n" >> SlimeVR-Tracker-nRF/prj.conf
-            echo "CONFIG_USE_ACTIVE_TIMEOUT=n" >> SlimeVR-Tracker-nRF/prj.conf
-            echo "CONFIG_SENSOR_LP_TIMEOUT=300000" >> SlimeVR-Tracker-nRF/prj.conf
-            echo "CONFIG_SENSOR_USE_LOW_POWER_2=n" >> SlimeVR-Tracker-nRF/prj.conf
-          fi
-          [[ "${SENSOR_CLOCK}" == "enabled" ]] && echo "CONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf || echo "CONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
+          find='\/\/[[:space:]]*clk-gpios'
+          replace='clk-gpios'
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          printf "\nCONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Disable External Sensor Clock
+        if: env.SENSOR_CLOCK == 'disabled'
+        run: |
+          cd zephyr-workspace
+          find='clk-gpios[[:space:]]*='
+          replace='// clk-gpios ='
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Enable Extra Actions
+        if: env.EXTRA_ACTIONS == 'enabled'
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_USER_EXTRA_ACTIONS=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Disable Extra Actions
+        if: env.EXTRA_ACTIONS == 'disabled'
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_USER_EXTRA_ACTIONS=n" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Enable Magnetometer
+        if: env.MAGNETOMETER == 'enabled'
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Disable Magnetometer
+        if: env.MAGNETOMETER == 'disabled'
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Enable Sleep
+        if: env.SLEEP == 'enabled'
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Disable Sleep
+        if: env.SLEEP == 'disabled'
+        run: |
+          cd zephyr-workspace
+          printf "\nCONFIG_USE_IMU_WAKE_UP=n" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\nCONFIG_USE_ACTIVE_TIMEOUT=n" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\nCONFIG_SENSOR_LP_TIMEOUT=300000" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\nCONFIG_SENSOR_USE_LOW_POWER_2=n" >> SlimeVR-Tracker-nRF/prj.conf
+
+      - name: Enable SW0 Button
+        if: env.SW0_BUTTON == 'enabled'
+        run: |
+          cd zephyr-workspace
+          find='\/\/[[:space:]]*sw0[[:space:]]*='
+          replace='sw0 ='
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+
+      - name: Disable SW0 Button
+        if: env.SW0_BUTTON == 'disabled'
+        run: |
+          cd zephyr-workspace
+          find='sw0[[:space:]]*='
+          replace='// sw0 ='
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
 
       - name: Build SlimeVR-Tracker-nRF (tracker only)
         run: |
@@ -190,19 +269,13 @@ jobs:
           rm -rf SlimeVR-Tracker-nRF/build
           mkdir -p SlimeVR-Tracker-nRF/build
 
-          EXTRA_OPTS=""
-          if [[ -n "${DTC_OVERLAY_FILE:-}" && -f "${DTC_OVERLAY_FILE}" ]]; then
-            EXTRA_OPTS="-DDTC_OVERLAY_FILE=${DTC_OVERLAY_FILE}"
-          fi
-
           west build \
             --board "$BOARD" \
             --pristine=always SlimeVR-Tracker-nRF \
             --build-dir SlimeVR-Tracker-nRF/build \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT=../SlimeVR-Tracker-nRF \
-            ${EXTRA_OPTS}
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
           SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
           SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"
@@ -211,7 +284,11 @@ jobs:
           else
             SRC=$(find SlimeVR-Tracker-nRF/build -type f -name "*.uf2" | head -n1)
           fi
-          test -n "$SRC" -a -f "$SRC" || { echo "UF2 not found"; find SlimeVR-Tracker-nRF/build -maxdepth 6 -type f -printf "  %p\n"; exit 1; }
+          test -n "$SRC" -a -f "$SRC" || {
+            echo "UF2 not found; listing possible outputs under build:"
+            find SlimeVR-Tracker-nRF/build -maxdepth 6 -type f -name "zephyr.*" -printf "  %p\n"
+            exit 1
+          }
 
           mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 

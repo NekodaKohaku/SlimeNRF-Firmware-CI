@@ -11,6 +11,7 @@ on:
           - i2c
           - spi
 
+# Allow one concurrent deployment
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -27,91 +28,158 @@ jobs:
       FILEFORMAT: "uf2"
 
     steps:
-      # 把本 repo checkout 到 manifest 子資料夾 (與原始工作流一致)
-      - name: 💻 Acquire code into workspace/SlimeNRF-CI
+      # === 原始：第一次 checkout（供 commit 資訊等）
+      - name: 💻 Acquire code
+        uses: actions/checkout@v5
+
+      - name: 📝 Put commit hash/name in env variables
+        run: |
+          echo "GIT_HASH=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+          echo "GIT_MESSAGE<<EOF" >> $GITHUB_ENV
+          git log -1 --pretty=%B >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      # === 原始：清空/第二次 checkout 到 manifest 子資料夾
+      - name: 🧹 Clean Landing Site
+        run: |
+          sudo rm -rf zephyr-workspace/SlimeNRF-CI
+
+      - name: 💻 Acquire code to zephyr-workspace/SlimeNRF-CI
         uses: actions/checkout@v5
         with:
           path: zephyr-workspace/SlimeNRF-CI
 
+      # === 原始：安裝 host 依賴 + venv + west/ninja
       - name: 🧰 Install Dependencies + West
         run: |
           sudo apt-get update && sudo apt install --no-install-recommends \
-          git cmake ninja-build gperf ccache dfu-util device-tree-compiler \
-          wget python3-dev python3-pip python3-setuptools python3-wheel \
-          python3-venv xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
+          git \
+          cmake \
+          ninja-build \
+          gperf \
+          ccache \
+          dfu-util \
+          device-tree-compiler \
+          wget \
+          python3-dev \
+          python3-pip \
+          python3-setuptools \
+          python3-tk \
+          python3-wheel \
+          python3-venv \
+          xz-utils \
+          file \
+          make \
+          gcc \
+          gcc-multilib \
+          g++-multilib \
+          libsdl2-dev \
+          libmagic1
+
           python3 -m venv ~/.venv
           source ~/.venv/bin/activate
           echo "PATH=$PATH" >> $GITHUB_ENV
           pip3 install west ninja
 
+      # === 原始：安裝 Zephyr SDK
       - name: 🪁 Install Zephyr SDK
         run: |
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
-      - name: ♻️ Initialize Zephyr Workspace (use manifest in SlimeNRF-CI)
+      # === 原始：初始化 Zephyr workspace（使用本 repo 當本地 manifest）
+      - name: ♻️ Initialize Zephyr Workspace
         run: |
           cd zephyr-workspace
-          rm -rf .west
+          sudo rm -rf .west
           west init -l SlimeNRF-CI
           west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: 🔧 Prepare output dir
+      # === 原始：安裝 Zephyr 的 Python 依賴（關鍵，修 elftools）
+      - name: 🐍 Install Python Dependencies
         run: |
-          mkdir -p zephyr-workspace/Releases
+          cd zephyr-workspace
+          source ~/.venv/bin/activate
+          pip3 install -r zephyr/scripts/requirements.txt
+          python - <<'PY'
+import sys
+try:
+    import elftools.elf.elffile  # pyelftools
+    import yaml                  # pyyaml
+    print("Zephyr Python deps OK")
+except Exception as e:
+    sys.exit(f"Missing deps: {e}")
+PY
 
+      # === 原始：建置輸出資料夾
+      - name: 🔧 Preparing Build Environment
+        run: |
+          cd zephyr-workspace
+          sudo rm -rf Releases
+          mkdir Releases
+
+      # === 新增：由 input 派生板名與輸出檔名（不改動原始專案結構）
       - name: 🧮 Derive names from input
         run: |
-          CONN="${{ inputs.connection_type }}"            # i2c 或 spi
+          CONN="${{ inputs.connection_type }}"                # i2c 或 spi
           CONN_UPPER=$(echo "$CONN" | tr '[:lower:]' '[:upper:]')
           echo "CONN=$CONN" >> $GITHUB_ENV
           echo "CONN_UPPER=$CONN_UPPER" >> $GITHUB_ENV
           echo "BOARD=${BOARD_PREFIX}${CONN}" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}${CONN_UPPER}_ProMicro" >> $GITHUB_ENV
 
+      # === 保留：Sanity check，確保 app 路徑存在
       - name: ✅ Sanity check workspace
         run: |
-          echo "::group::ls zephyr-workspace"
           ls -la zephyr-workspace
-          echo "::endgroup::"
-          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "❌ SlimeVR-Tracker-nRF 不在 workspace，檢查 west.yml 是否包含它"; exit 1)
+          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "❌ SlimeVR-Tracker-nRF not found in workspace"; exit 1)
 
-      - name: 🔨 Build Firmware
+      # === 建置（沿用你原本 west 參數與 build 目錄習慣）
+      - name: 🔨 Build SlimeVR-Tracker-nRF (Tracker only)
         run: |
           cd zephyr-workspace
-          echo "🏗️ Building for board: $BOARD"
-          echo "📦 Output file: $OUTPUT_NAME.${FILEFORMAT}"
+          sudo rm -rf SlimeVR-Tracker-nRF/build
+          mkdir SlimeVR-Tracker-nRF/build
 
-          # 來源路徑改為相對於 workspace 的目錄：SlimeVR-Tracker-nRF
           west build \
               --board "$BOARD" \
               --pristine=always SlimeVR-Tracker-nRF \
-              --build-dir build \
+              --build-dir SlimeVR-Tracker-nRF/build \
               -- \
               -DNCS_TOOLCHAIN_VERSION=NONE \
               -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
-          # 產物位置：build/zephyr/zephyr.uf2
-          mv build/zephyr/zephyr.${FILEFORMAT} "Releases/$OUTPUT_NAME.${FILEFORMAT}"
+          # 兼容 sysbuild 與非 sysbuild 的輸出路徑
+          SRC1="SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT}"
+          SRC2="SlimeVR-Tracker-nRF/build/zephyr/zephyr.${FILEFORMAT}"
+          if   [ -f "$SRC1" ]; then SRC="$SRC1";
+          elif [ -f "$SRC2" ]; then SRC="$SRC2";
+          else
+            SRC=$(find SlimeVR-Tracker-nRF/build -path "*/zephyr/zephyr.${FILEFORMAT}" | head -n1)
+          fi
+          test -n "$SRC" -a -f "$SRC" || { echo "❌ UF2 artifact not found"; find SlimeVR-Tracker-nRF/build -maxdepth 4 -type f | sed 's/^/  /'; exit 1; }
 
+          mv "$SRC" "Releases/$OUTPUT_NAME.${FILEFORMAT}"
+
+      # === 原始：上傳 artifact
       - name: 💾 Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
 
-      # 如不想覆蓋 release，可移除此步驟
+      # === 原始：建立/更新 Release
       - name: 📁 Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
         with:
           token: ${{ secrets.gh_token }}
           tag: "latest"
           prerelease: false
-          name: "Latest Tracker Firmware"
+          name: "Latest Firmware"
           body: |
-            Manual build of SlimeNRF Tracker Firmware for: ${{ env.CONN_UPPER }}
+            Manual build of the SlimeNRF Tracker Firmware. Board: ${{ env.BOARD }} (Conn: ${{ env.CONN_UPPER }})
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           clear_attachments: false

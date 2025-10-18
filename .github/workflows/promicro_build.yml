@@ -1,4 +1,4 @@
-name: Build ProMicro I2C (manual, toggles)
+name: Build ProMicro I2C (manual, with toggles)
 
 on:
   workflow_dispatch:
@@ -9,12 +9,12 @@ on:
         options: [enabled, disabled]
         default: disabled
       sleep:
-        description: "睡眠模式 (CONFIG_USE_IMU_WAKE_UP / CONFIG_USE_ACTIVE_TIMEOUT)"
+        description: "睡眠 (CONFIG_USE_IMU_WAKE_UP / CONFIG_USE_ACTIVE_TIMEOUT)"
         type: choice
         options: [enabled, disabled]
         default: enabled
       sw0:
-        description: "SW0 按鍵 (DTS sw0 屬性 + CONFIG_USER_SW0)"
+        description: "SW0 按鍵 (只改 DTS 之 sw0 屬性)"
         type: choice
         options: [enabled, disabled]
         default: disabled
@@ -86,98 +86,97 @@ jobs:
           rm -rf Releases
           mkdir -p Releases
 
-      # =========================
-      # Kconfig 開關（雙向）
-      # =========================
-      - name: 🔧 Apply Kconfig toggles (dual-way)
+      # 先把 nRF52840 不相容的 Kconfig 清掉（避免 DPPI 相關相依問題）
+      - name: "🩹 Patch Kconfig for nRF52840 (disable DPPI if present)"
         run: |
           set -euxo pipefail
-          cd zephyr-workspace
-          KF="SlimeVR-Tracker-nRF/.ci_kconfig.conf"
-          : > "$KF"
+          cd zephyr-workspace/SlimeVR-Tracker-nRF
+          sed -i -E 's/^[[:space:]]*CONFIG_NRFX_DPPI10=y/# CONFIG_NRFX_DPPI10 is not set/' prj.conf || true
+          sed -i -E 's/^[[:space:]]*CONFIG_NRFX_DPPI=y/# CONFIG_NRFX_DPPI is not set/' prj.conf || true
 
-          # clk
-          if [ "${{ inputs.clk }}" = "enabled" ]; then
-            echo "CONFIG_USE_SENSOR_CLOCK=y" >> "$KF"
-          else
-            echo "CONFIG_USE_SENSOR_CLOCK=n" >> "$KF"
-          fi
+      # ============ Kconfig：clk / sleep / magnetometer / extraaction（雙向） ============
+      - name: "🔧 Kconfig: USE_SENSOR_CLOCK"
+        if: ${{ inputs.clk == 'enabled' }}
+        run: |
+          set -euxo pipefail
+          echo "CONFIG_USE_SENSOR_CLOCK=y" >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
+      - name: "🔧 Kconfig: !USE_SENSOR_CLOCK"
+        if: ${{ inputs.clk == 'disabled' }}
+        run: |
+          set -euxo pipefail
+          echo "CONFIG_USE_SENSOR_CLOCK=n" >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
 
-          # sleep
-          if [ "${{ inputs.sleep }}" = "enabled" ]; then
-            echo "CONFIG_USE_IMU_WAKE_UP=y"       >> "$KF"
-            echo "CONFIG_USE_ACTIVE_TIMEOUT=y"    >> "$KF"
-          else
-            echo "CONFIG_USE_IMU_WAKE_UP=n"       >> "$KF"
-            echo "CONFIG_USE_ACTIVE_TIMEOUT=n"    >> "$KF"
-            echo "CONFIG_SENSOR_LP_TIMEOUT=300000" >> "$KF"
-            echo "CONFIG_SENSOR_USE_LOW_POWER_2=n" >> "$KF"
-          fi
+      - name: "🔧 Kconfig: Sleep ON"
+        if: ${{ inputs.sleep == 'enabled' }}
+        run: |
+          set -euxo pipefail
+          {
+            echo "CONFIG_USE_IMU_WAKE_UP=y"
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
+          } >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
+      - name: "🔧 Kconfig: Sleep OFF"
+        if: ${{ inputs.sleep == 'disabled' }}
+        run: |
+          set -euxo pipefail
+          {
+            echo "CONFIG_USE_IMU_WAKE_UP=n"
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=n"
+            echo "CONFIG_SENSOR_LP_TIMEOUT=300000"
+            echo "CONFIG_SENSOR_USE_LOW_POWER_2=n"
+          } >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
 
-          # sw0
-          if [ "${{ inputs.sw0 }}" = "enabled" ]; then
-            echo "CONFIG_USER_SW0=y" >> "$KF"
-          else
-            echo "CONFIG_USER_SW0=n" >> "$KF"
-          fi
+      - name: "🔧 Kconfig: Magnetometer ON"
+        if: ${{ inputs.magnetometer == 'enabled' }}
+        run: |
+          set -euxo pipefail
+          echo "CONFIG_SENSOR_USE_MAG=y" >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
+      - name: "🔧 Kconfig: Magnetometer OFF"
+        if: ${{ inputs.magnetometer == 'disabled' }}
+        run: |
+          set -euxo pipefail
+          echo "CONFIG_SENSOR_USE_MAG=n" >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
 
-          # magnetometer
-          if [ "${{ inputs.magnetometer }}" = "enabled" ]; then
-            echo "CONFIG_SENSOR_USE_MAG=y" >> "$KF"
-          else
-            echo "CONFIG_SENSOR_USE_MAG=n" >> "$KF"
-          fi
+      - name: "🔧 Kconfig: Extra action ON"
+        if: ${{ inputs.extraaction == 'enabled' }}
+        run: |
+          set -euxo pipefail
+          echo "CONFIG_USER_EXTRA_ACTIONS=y" >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
+      - name: "🔧 Kconfig: Extra action OFF"
+        if: ${{ inputs.extraaction == 'disabled' }}
+        run: |
+          set -euxo pipefail
+          echo "CONFIG_USER_EXTRA_ACTIONS=n" >> zephyr-workspace/SlimeVR-Tracker-nRF/prj.conf
 
-          # extraaction
-          if [ "${{ inputs.extraaction }}" = "enabled" ]; then
-            echo "CONFIG_USER_EXTRA_ACTIONS=y" >> "$KF"
-          else
-            echo "CONFIG_USER_EXTRA_ACTIONS=n" >> "$KF"
-          fi
-
-          # append 到 app 的 prj.conf
-          cat "$KF" >> SlimeVR-Tracker-nRF/prj.conf
-          echo "==== Appended to prj.conf ===="
-          cat "$KF"
-
-      # =========================
-      # DTS 屬性（雙向：clk-gpios / sw0）
-      # =========================
-      - name: "🔧 DTS: clk-gpios toggle (dual-way)"
+      # ============ DTS：clk-gpios / sw0（雙向） ============
+      - name: "🔧 DTS: clk-gpios toggle"
         run: |
           set -euxo pipefail
           cd zephyr-workspace
           DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
           if [ -f "$DTS" ]; then
             if [ "${{ inputs.clk }}" = "enabled" ]; then
-              # 取消註解
+              # 取消註解 clk-gpios =
               sed -i -E 's|^[[:space:]]*//[[:space:]]*clk-gpios[[:space:]]*=|  clk-gpios =|g' "$DTS" || true
             else
-              # 註解
-              sed -i -E 's|^[[:space:]]*//[[:space:]]*clk-gpios[[:space:]]*=|// clk-gpios =|g' "$DTS" || true
+              # 註解 clk-gpios =
               sed -i -E 's|(^[[:space:]]*)clk-gpios[[:space:]]*=|\1// clk-gpios =|g' "$DTS" || true
             fi
           fi
 
-      - name: "🔧 DTS: sw0 property toggle (dual-way)"
+      - name: "🔧 DTS: sw0 toggle"
         run: |
           set -euxo pipefail
           cd zephyr-workspace
           DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
           if [ -f "$DTS" ]; then
             if [ "${{ inputs.sw0 }}" = "enabled" ]; then
-              # 取消註解
               sed -i -E 's|^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=|  sw0 =|g' "$DTS" || true
             else
-              # 註解
-              sed -i -E 's|^[[:space:]]*//[[:space:]]*sw0[[:space:]]*=|// sw0 =|g' "$DTS" || true
               sed -i -E 's|(^[[:space:]]*)sw0[[:space:]]*=|\1// sw0 =|g' "$DTS" || true
             fi
           fi
 
-      # =========================
-      # Build（禁用 sysbuild）
-      # =========================
+      # ============ Build ============
       - name: 🔨 Build SlimeVR-Tracker-nRF (ProMicro I2C, no-sysbuild)
         run: |
           set -euxo pipefail
@@ -196,9 +195,8 @@ jobs:
             -DBOARD_ROOT=../SlimeVR-Tracker-nRF \
             -DSYSBUILD=OFF
 
-          OUT="Releases/${{ inputs.filename }}.uf2"
-          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 "$OUT"
-          echo "Output: $OUT"
+          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 \
+             Releases/${{ inputs.filename }}.uf2
 
       - name: 🧾 Job Summary
         run: |

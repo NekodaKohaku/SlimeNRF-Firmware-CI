@@ -34,8 +34,7 @@ on:
         options: [enabled, disabled]
         default: disabled
       pinmap_json:
-        description: >-
-          Pins JSON (e.g. {"i2c":{"sda":"P0.06","scl":"P0.08"},"pwm0":"P0.15","sw0":"P1.00","led":"P0.15","clk":"P0.20","spi3":false})
+        description: 'Pins JSON, e.g. {"i2c":{"sda":"P0.06","scl":"P0.08"},"pwm0":"P0.15","sw0":"P1.00","led":"P0.15","clk":"P0.20","spi3":false}'
         required: false
         type: string
 
@@ -122,18 +121,22 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      # ===== 可選：由 pin JSON 產生 devicetree overlay =====
+      # ===== Optional: generate devicetree overlay from pin JSON =====
       - name: Generate devicetree overlay from pin JSON (optional)
+        shell: bash
         env:
           PINMAP_JSON: ${{ inputs.pinmap_json }}
         run: |
           set -euo pipefail
           cd zephyr-workspace
+          if [[ -z "${PINMAP_JSON:-}" ]]; then
+            echo "No PIN JSON provided; skip overlay."
+            exit 0
+          fi
+
           python3 - <<'PY'
 import os, json, re, sys
 pinmap = os.environ.get("PINMAP_JSON","").strip()
-if not pinmap:
-    print("No PIN JSON provided; skip overlay."); sys.exit(0)
 try:
     data = json.loads(pinmap)
 except Exception as e:
@@ -182,11 +185,12 @@ def emit_sw0(pin):
 
 def emit_led(pin):
     p,n = parse_pin(pin)
-    out.append(f"&{{/zephyr,user}} {{ led-gpios = <&gpio{p} {n} GPIO_OPEN_SOURCE>; }};")
+    # 用路徑寫法避免 f-string 大括號混淆：直接重開 / 節點合併
+    out.append(f"/ {{ zephyr,usershadow: zephyr,user {{ led-gpios = <&gpio{p} {n} GPIO_OPEN_SOURCE>; }}; }};")
 
 def emit_clk(pin):
     p,n = parse_pin(pin)
-    out.append(f"&{{/zephyr,user}} {{ clk-gpios = <&gpio{p} {n} GPIO_OPEN_DRAIN>; }};")
+    out.append(f"/ {{ zephyr,usershadow: zephyr,user {{ clk-gpios = <&gpio{p} {n} GPIO_OPEN_DRAIN>; }}; }};")
 
 if "i2c"  in data: emit_i2c(data["i2c"])
 if "pwm0" in data: emit_pwm("pwm0", data["pwm0"])
@@ -201,9 +205,10 @@ if not out:
 
 overlay = "SlimeVR-Tracker-nRF/promicro_pins.overlay"
 with open(overlay, "w") as f:
-    f.write("/* Auto-generated from pinmap_json */\n/ { };\n" + "\n".join(out) + "\n")
+    f.write("/* Auto-generated from pinmap_json */\n" + "\n".join(out) + "\n")
 print("Wrote overlay:", overlay)
 PY
+
           if [ -f zephyr-workspace/SlimeVR-Tracker-nRF/promicro_pins.overlay ]; then
             echo "DTC_OVERLAY_FILE=$(pwd)/zephyr-workspace/SlimeVR-Tracker-nRF/promicro_pins.overlay" >> $GITHUB_ENV
           fi

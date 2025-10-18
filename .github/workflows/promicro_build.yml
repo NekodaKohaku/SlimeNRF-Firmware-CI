@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       connection_type:
-        description: "Select connection type (I2C or SPI)"
+        description: "Select connection type (i2c or spi)"
         required: true
         type: choice
         options:
@@ -24,6 +24,7 @@ jobs:
     env:
       BOARD_PREFIX: "promicro_uf2/nrf52840/"
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
+      FILEFORMAT: "uf2"
 
     steps:
       - name: 💻 Acquire code
@@ -59,13 +60,20 @@ jobs:
           cd zephyr-workspace
           mkdir -p Releases
 
+      - name: 🧮 Derive names from input
+        run: |
+          CONN="${{ inputs.connection_type }}"            # i2c 或 spi
+          CONN_UPPER=$(echo "$CONN" | tr '[:lower:]' '[:upper:]')
+          echo "CONN=$CONN" >> $GITHUB_ENV
+          echo "CONN_UPPER=$CONN_UPPER" >> $GITHUB_ENV
+          echo "BOARD=${BOARD_PREFIX}${CONN}" >> $GITHUB_ENV
+          echo "OUTPUT_NAME=${FILENAME_PREFIX}${CONN_UPPER}_ProMicro" >> $GITHUB_ENV
+
       - name: 🔨 Build Firmware
         run: |
           cd zephyr-workspace
-          BOARD="${BOARD_PREFIX}${{ inputs.connection_type }}"
-          OUTPUT_NAME="${FILENAME_PREFIX}${{ inputs.connection_type | upper }}_ProMicro"
           echo "🏗️ Building for board: $BOARD"
-          echo "📦 Output file: $OUTPUT_NAME.uf2"
+          echo "📦 Output file: $OUTPUT_NAME.${FILEFORMAT}"
 
           west build \
               --board "$BOARD" \
@@ -75,13 +83,13 @@ jobs:
               -DNCS_TOOLCHAIN_VERSION=NONE \
               -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
-          mv build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 Releases/"$OUTPUT_NAME.uf2"
+          mv build/SlimeVR-Tracker-nRF/zephyr/zephyr.${FILEFORMAT} "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
       - name: 💾 Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SlimeNRF_${{ inputs.connection_type | upper }}_Tracker.uf2
-          path: zephyr-workspace/Releases/SlimeNRF_Tracker_${{ inputs.connection_type | upper }}_ProMicro.uf2
+          name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
 
       - name: 📁 Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
@@ -91,7 +99,7 @@ jobs:
           prerelease: false
           name: "Latest Tracker Firmware"
           body: |
-            Manual build of SlimeNRF Tracker Firmware for: ${{ inputs.connection_type | upper }}
+            Manual build of SlimeNRF Tracker Firmware for: ${{ env.CONN_UPPER }}
           files: |
-            zephyr-workspace/Releases/SlimeNRF_Tracker_${{ inputs.connection_type | upper }}_ProMicro.uf2
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           clear_attachments: false

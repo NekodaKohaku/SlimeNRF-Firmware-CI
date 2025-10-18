@@ -124,10 +124,10 @@ jobs:
             else
               echo "Invalid pin: $s" >&2; exit 1
             fi
+            # 強制十進位，去前導零，避免 08/09 觸發八進位錯
             pin=$((10#$pin))
             echo "$port $pin"
           }
-
 
           read SDA_PORT SDA_PIN < <(parse_pin "${SDA}")
           read SCL_PORT SCL_PIN < <(parse_pin "${SCL}")
@@ -156,13 +156,22 @@ jobs:
             "$DTS"
 
           # SW0（buttons 節點）
-          sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
+          sed -i -E \
+            "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" \
+            "$DTS"
 
-          # LED（zephyr,user 節點）
-          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(led-gpios[[:space:]]*=<)&gpio[01][[:space:]]+[0-9]+#\\1&gpio${LED_PORT} ${LED_PIN}#" "$DTS"
+          # LED（zephyr,user 節點）— 在替換字串中用 \\& 產生字面上的 &
+          sed -i -E \
+            "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#" \
+            "$DTS"
 
-          # clk-gpios：若原本註解，先解註再覆蓋；若存在就覆蓋數值（是否啟用由下一步控制）
-          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; s#(clk-gpios[[:space:]]*=<)&gpio[01][[:space:]]+[0-9]+#\\1&gpio${CLK_PORT} ${CLK_PIN}#; }" "$DTS"
+          # clk-gpios：若原本註解，先解註再覆蓋；若存在就覆蓋數值（替換字串中的 & 也必須跳脫）
+          sed -i -E \
+            "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
+               s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
+               s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#; \
+             }" \
+            "$DTS"
 
       # ===== 功能開關：外接時鐘 =====
       - name: Enable External Sensor Clock

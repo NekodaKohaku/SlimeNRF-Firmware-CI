@@ -1,20 +1,20 @@
-name: Build ProMicro I2C (manual, 4 toggles)
+name: Build ProMicro I2C (manual toggles)
 
 on:
   workflow_dispatch:
     inputs:
       clk:
-        description: "外部時鐘"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      sleep:
-        description: "睡眠模式"
+        description: "外部時鐘 (CONFIG_USE_SENSOR_CLOCK)"
         required: true
         type: choice
         options: [enabled, disabled]
         default: disabled
+      sleep:
+        description: "睡眠模式 (IMU 喚醒/Active timeout)"
+        required: true
+        type: choice
+        options: [enabled, disabled]
+        default: enabled
       sw0:
         description: "SW0 按鍵"
         required: true
@@ -27,115 +27,88 @@ on:
         type: choice
         options: [enabled, disabled]
         default: enabled
+      filename:
+        description: "輸出檔名（不含副檔名）"
+        required: true
+        type: string
+        default: "SlimeNRF_Tracker_I2C_ProMicro"
 
-permissions:
-  contents: write
+permissions: write-all
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 💻 Checkout CI repo into workspace
-        uses: actions/checkout@v4
+      - name: 💻 Checkout (root)
+        uses: actions/checkout@v5
+
+      - name: 🧹 Clean landing site
+        run: sudo rm -rf zephyr-workspace/SlimeNRF-CI
+
+      - name: 💻 Checkout (as west manifest)
+        uses: actions/checkout@v5
         with:
           path: zephyr-workspace/SlimeNRF-CI
 
       - name: 🧰 Install host deps + west
         run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            git cmake ninja-build gperf dfu-util device-tree-compiler \
-            python3-pip python3-setuptools python3-wheel wget xz-utils file
-          pip3 install --upgrade west
+          sudo apt-get update && sudo apt install --no-install-recommends -y \
+            git cmake ninja-build gperf ccache dfu-util device-tree-compiler \
+            wget python3-dev python3-pip python3-setuptools python3-tk \
+            python3-wheel python3-venv xz-utils file make gcc gcc-multilib \
+            g++-multilib libsdl2-dev libmagic1
+          python3 -m venv ~/.venv
+          . ~/.venv/bin/activate
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          pip3 install -U west ninja
 
-      - name: 🪁 Install Zephyr SDK 0.17.2 (arm-zephyr-eabi)
+      - name: 🪁 Install Zephyr SDK (arm only)
         run: |
           set -euxo pipefail
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
-      - name: ♻️ Init Zephyr workspace
+      - name: ♻️ Initialize Zephyr workspace
         run: |
           set -euxo pipefail
           cd zephyr-workspace
+          rm -rf .west || true
           west init -l SlimeNRF-CI
           west update --narrow -o=--depth=1
           west zephyr-export
           pip3 install -r zephyr/scripts/requirements.txt
-
-      - name: 📥 Ensure SlimeVR-Tracker-nRF exists
-        run: |
-          set -euxo pipefail
-          cd zephyr-workspace
-          if [ ! -d SlimeVR-Tracker-nRF ]; then
-            git clone --depth 1 https://github.com/SlimeVR/SlimeVR-Tracker-nRF.git SlimeVR-Tracker-nRF
-          fi
-          test -f SlimeVR-Tracker-nRF/CMakeLists.txt
-
-      - name: 🧽 Prepare output dir
-        run: |
-          set -euxo pipefail
-          cd zephyr-workspace
-          rm -rf Releases
           mkdir -p Releases
 
-      # === Toggles: clk ===
+      # ========================
+      #  四個開關：對稱處理
+      # ========================
+
+      # CLK off: 註解 DTS 的 clk-gpios，並在 prj.conf 強制 n
       - name: 🔧 Disable external clock (clk-gpios) + Kconfig
         if: ${{ inputs.clk == 'disabled' }}
         run: |
           set -euxo pipefail
           cd zephyr-workspace
-          find='clk-gpios[ \t]*='
-          replace='// clk-gpios ='
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts || true
+          f="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          test -f "$f" || { echo "::error::DTS not found: $f"; exit 1; }
+          sed -i "s|clk-gpios[[:space:]]*=|// clk-gpios =|g" "$f" || true
           printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: 🔧 Enable external clock (uncomment) + Kconfig
+      # CLK on: 把前一步可能註解的行恢復，並在 prj.conf 強制 y
+      - name: 🔧 Enable external clock (clk-gpios) + Kconfig
         if: ${{ inputs.clk == 'enabled' }}
         run: |
           set -euxo pipefail
           cd zephyr-workspace
-          find='\/\/[ \t]*clk-gpios[ \t]*='
-          replace='clk-gpios ='
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts || true
+          f="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          test -f "$f" || { echo "::error::DTS not found: $f"; exit 1; }
+          sed -i 's|^\([[:space:]]*\)//[[:space:]]*clk-gpios[[:space:]]*=|\1clk-gpios =|g' "$f" || true
           printf "\nCONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # === Toggles: SW0 ===
-      - name: 🔧 Disable SW0 in DTS + Kconfig
-        if: ${{ inputs.sw0 == 'disabled' }}
-        run: |
-          set -euxo pipefail
-          cd zephyr-workspace
-          find='sw0[ \t]*='
-          replace='// sw0 ='
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts || true
-          printf "\nCONFIG_USER_SW0=n" >> SlimeVR-Tracker-nRF/prj.conf
-
-      - name: 🔧 Enable SW0 in DTS + Kconfig
-        if: ${{ inputs.sw0 == 'enabled' }}
-        run: |
-          set -euxo pipefail
-          cd zephyr-workspace
-          find='\/\/[ \t]*sw0[ \t]*='
-          replace='sw0 ='
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts || true
-          printf "\nCONFIG_USER_SW0=y" >> SlimeVR-Tracker-nRF/prj.conf
-
-      # === Toggles: Sleep ===
-      - name: 🔧 Sleep = enabled
-        if: ${{ inputs.sleep == 'enabled' }}
-        run: |
-          set -euxo pipefail
-          cd zephyr-workspace
-          {
-            echo "CONFIG_USE_IMU_WAKE_UP=y"
-            echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
-          } >> SlimeVR-Tracker-nRF/prj.conf
-
-      - name: 🔧 Sleep = disabled
+      # Sleep off: 關閉 IMU 喚醒/Active timeout，改較長 LP timeout 並關閉第二低功耗
+      - name: 😴 Disable sleep (Kconfig)
         if: ${{ inputs.sleep == 'disabled' }}
         run: |
           set -euxo pipefail
@@ -147,60 +120,107 @@ jobs:
             echo "CONFIG_SENSOR_USE_LOW_POWER_2=n"
           } >> SlimeVR-Tracker-nRF/prj.conf
 
-      # === Toggles: Magnetometer ===
-      - name: 🔧 Magnetometer = enabled
-        if: ${{ inputs.magnetometer == 'enabled' }}
+      # Sleep on
+      - name: 😴 Enable sleep (Kconfig)
+        if: ${{ inputs.sleep == 'enabled' }}
         run: |
           set -euxo pipefail
           cd zephyr-workspace
-          echo "CONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf
+          {
+            echo "CONFIG_USE_IMU_WAKE_UP=y"
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
+          } >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: 🔧 Magnetometer = disabled
+      # 磁力計 off
+      - name: 🧭 Disable magnetometer (Kconfig)
         if: ${{ inputs.magnetometer == 'disabled' }}
         run: |
           set -euxo pipefail
           cd zephyr-workspace
           echo "CONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: 🔨 Build SlimeVR-Tracker-nRF (ProMicro I2C)
+      # 磁力計 on
+      - name: 🧭 Enable magnetometer (Kconfig)
+        if: ${{ inputs.magnetometer == 'enabled' }}
         run: |
           set -euxo pipefail
           cd zephyr-workspace
-          APP_DIR="$(pwd)/SlimeVR-Tracker-nRF"
-          BUILD_DIR="$APP_DIR/build"
-          OUT_DIR="$(pwd)/Releases"
-          rm -rf "$BUILD_DIR"
-          mkdir -p "$BUILD_DIR" "$OUT_DIR"
+          echo "CONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf
 
+      # SW0 off：註解 DTS 的 sw0，並在 prj.conf 設 n
+      - name: 🔘 Disable SW0 (DTS + Kconfig)
+        if: ${{ inputs.sw0 == 'disabled' }}
+        run: |
+          set -euxo pipefail
+          cd zephyr-workspace
+          f="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          test -f "$f" || { echo "::error::DTS not found: $f"; exit 1; }
+          sed -i "s|sw0[[:space:]]*=|// sw0 =|g" "$f" || true
+          echo "CONFIG_USER_SW0=n" >> SlimeVR-Tracker-nRF/prj.conf
+
+      # SW0 on：還原 sw0，並在 prj.conf 設 y
+      - name: 🔘 Enable SW0 (DTS + Kconfig)
+        if: ${{ inputs.sw0 == 'enabled' }}
+        run: |
+          set -euxo pipefail
+          cd zephyr-workspace
+          f="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+          test -f "$f" || { echo "::error::DTS not found: $f"; exit 1; }
+          sed -i 's|^\([[:space:]]*\)//[[:space:]]*sw0[[:space:]]*=|\1sw0 =|g' "$f" || true
+          echo "CONFIG_USER_SW0=y" >> SlimeVR-Tracker-nRF/prj.conf
+
+      # ========================
+      #  建置
+      # ========================
+      - name: 🔨 Build (promicro_uf2/nrf52840/i2c)
+        run: |
+          set -euxo pipefail
+          cd zephyr-workspace
+          rm -rf SlimeVR-Tracker-nRF/build || true
+          mkdir -p SlimeVR-Tracker-nRF/build
           west build \
             --board promicro_uf2/nrf52840/i2c \
-            --pristine=always "$APP_DIR" \
-            --build-dir "$BUILD_DIR" \
+            --pristine=always SlimeVR-Tracker-nRF \
+            --build-dir SlimeVR-Tracker-nRF/build \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT="$APP_DIR"
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
-          cp "$BUILD_DIR/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2" \
-             "$OUT_DIR/SlimeNRF_Tracker_I2C_ProMicro.uf2"
+      - name: 📦 Collect .uf2
+        run: |
+          set -euxo pipefail
+          cd zephyr-workspace
+          cp SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 \
+             "Releases/${{ inputs.filename }}.uf2"
 
-      - name: 📦 Upload artifact
+      - name: ⤴️ Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SlimeNRF_Tracker_I2C_ProMicro.uf2
-          path: zephyr-workspace/Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
+          name: ${{ inputs.filename }}.uf2
+          path: zephyr-workspace/Releases/${{ inputs.filename }}.uf2
 
-      - name: 🚀 Publish/Update 'latest' release
+      - name: 🧾 Summary
+        run: |
+          {
+            echo "## Manual single-target build"
+            echo
+            echo "Board: \`promicro_uf2/nrf52840/i2c\`"
+            echo "clk=${{ inputs.clk }}, sleep=${{ inputs.sleep }}, sw0=${{ inputs.sw0 }}, magnetometer=${{ inputs.magnetometer }}"
+            echo "File: ${{ inputs.filename }}.uf2"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 🚀 Release (tag=latest)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Latest Firmware"
+          name: "Latest Firmware (ProMicro I2C)"
           body: |
             Manual single-target build:
 
             Board: promicro_uf2/nrf52840/i2c
-            clk=${{ inputs.clk }}, sleep=${{ inputs.sleep }}, sw0=${{ inputs.sw0 }}, magnetometer=${{ inputs.magnetometer }}, extraaction=enabled
-            File: SlimeNRF_Tracker_I2C_ProMicro.uf2
-
-            Download asset below.
+            clk=${{ inputs.clk }}, sleep=${{ inputs.sleep }}, sw0=${{ inputs.sw0 }}, magnetometer=${{ inputs.magnetometer }}
+            File: ${{ inputs.filename }}.uf2
           files: |
-            zephyr-workspace/Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
+            zephyr-workspace/Releases/${{ inputs.filename }}.uf2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

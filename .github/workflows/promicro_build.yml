@@ -121,16 +121,21 @@ jobs:
           IFACE="$(awk -F'/' '{print $3}' <<< "$BOARD")"  # 可能為空（像 xiao_ble）
           echo "app=$APP"     >> "$GITHUB_OUTPUT"
           echo "iface=$IFACE" >> "$GITHUB_OUTPUT"
+
+          # 為了避免後面 Markdown/summary 中用到 `||` 造成 YAML 解析炸裂
+          IFACE_PRINT="$IFACE"
+          if [ -z "$IFACE_PRINT" ]; then IFACE_PRINT="n/a"; fi
+          echo "iface_print=$IFACE_PRINT" >> "$GITHUB_OUTPUT"
+
           echo "Using APP=$APP, IFACE=${IFACE:-<none>}, BOARD=$BOARD"
 
       - name: 📎 (Stacked 專用) 複製演算法庫到 APP
         if: ${{ steps.meta.outputs.app == 'Stacked-SmolSlime' }}
         run: |
           set -eux
-          # 某些 Stacked 專案需要把以下目錄帶過去（與你原本 CI 一致）
-          cp -r SlimeVR-Tracker-nRF/vqf-c                     Stacked-SmolSlime/ || true
-          cp -r SlimeVR-Tracker-nRF/Fusion                    Stacked-SmolSlime/ || true
-          cp -r SlimeVR-Tracker-nRF/NXP-ISSDK-SensorFusion    Stacked-SmolSlime/ || true
+          cp -r SlimeVR-Tracker-nRF/vqf-c                  Stacked-SmolSlime/ || true
+          cp -r SlimeVR-Tracker-nRF/Fusion                 Stacked-SmolSlime/ || true
+          cp -r SlimeVR-Tracker-nRF/NXP-ISSDK-SensorFusion Stacked-SmolSlime/ || true
 
       - name: 🔧 Apply Kconfig toggles（clock / sleep / mag / sw0）
         run: |
@@ -165,7 +170,6 @@ jobs:
           INT0=$(normalize "${{ inputs.int0 }}");   LED=$(normalize "${{ inputs.led }}")
           CLKPIN=$(normalize "${{ inputs.clk_pin }}"); VCC=$(normalize "${{ inputs.vcc }}")
 
-          # 預設值（避免空字串）
           : "${SDA:=6}"  ; : "${SCL:=8}"
           : "${MOSI:=6}" ; : "${MISO:=24}" ; : "${SCK:=8}" ; : "${CS:=22}"
           : "${INT0:=17}" ; : "${LED:=15}" ; : "${CLKPIN:=20}" ; : "${VCC:=31}"
@@ -200,7 +204,6 @@ jobs:
 EOF
             sed -i "s/__SDA__/${SDA}/g; s/__SCL__/${SCL}/g" custom_overlay/custom.overlay
           else
-            # spi / smspi 都走 SPIM3 的 overlay（與你現有 CI 一致）
             cat <<'EOF' >> custom_overlay/custom.overlay
 &spi3 {
   status = "okay";
@@ -256,7 +259,7 @@ EOF
             echo "| Board | \`${{ inputs.board }}\` |"
             echo "| Wiring | \`${{ inputs.wiring }}\` |"
             echo "| APP | \`${{ steps.meta.outputs.app }}\` |"
-            echo "| Interface | \`${{ steps.meta.outputs.iface || 'n/a' }}\` |"
+            echo "| Interface | \`${{ steps.meta.outputs.iface_print }}\` |"
             echo "| Pin Mode | \`${{ inputs.pinmode }}\` |"
             echo "| Clock | \`${{ inputs.clk }}\` |"
             echo "| Sleep | \`${{ inputs.sleep }}\` |"
@@ -269,7 +272,6 @@ EOF
         run: |
           set -eux
           mkdir -p output
-          # 只要存在就複製；兩種格式都嘗試
           [[ -f build/zephyr/zephyr.uf2 ]] && cp build/zephyr/zephyr.uf2 "output/${{ inputs.filename }}.uf2"
           [[ -f build/zephyr/zephyr.hex ]] && cp build/zephyr/zephyr.hex "output/${{ inputs.filename }}.hex"
 
@@ -292,7 +294,7 @@ EOF
             | Board | `${{ inputs.board }}` |
             | Wiring | `${{ inputs.wiring }}` |
             | APP | `${{ steps.meta.outputs.app }}` |
-            | Interface | `${{ steps.meta.outputs.iface || 'n/a' }}` |
+            | Interface | `${{ steps.meta.outputs.iface_print }}` |
             | Pin Mode | `${{ inputs.pinmode }}` |
             | Clock | `${{ inputs.clk }}` |
             | Sleep | `${{ inputs.sleep }}` |

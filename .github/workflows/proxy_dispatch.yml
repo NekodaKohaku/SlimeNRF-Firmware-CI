@@ -1,0 +1,45 @@
+name: Proxy Dispatch (Public Firmware Build Entry)
+
+on:
+  repository_dispatch:
+    types: [public_build_request]
+
+jobs:
+  call-builder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate payload
+        run: |
+          echo "🔍 檢查輸入參數..."
+          echo "Board: ${{ github.event.client_payload.board }}"
+          if [ -z "${{ github.event.client_payload.board }}" ]; then
+            echo "❌ 缺少 board 參數" && exit 1
+          fi
+
+      - name: Trigger public_build workflow
+        uses: peter-evans/workflow-dispatch@v1
+        with:
+          token: ${{ secrets.PUBLIC_TRIGGER_TOKEN }}
+          repository: NekodaKohaku/SlimeNRF-Firmware-CI
+          workflow: public_build.yml
+          ref: main
+          inputs: |
+            board=${{ github.event.client_payload.board }}
+            filename=${{ github.event.client_payload.filename }}
+            clk=${{ github.event.client_payload.clk }}
+            sleep=${{ github.event.client_payload.sleep }}
+            sw0=${{ github.event.client_payload.sw0 }}
+            magnetometer=${{ github.event.client_payload.magnetometer }}
+            pinmode=${{ github.event.client_payload.pinmode }}
+            wiring=${{ github.event.client_payload.wiring }}
+            sda=${{ github.event.client_payload.sda }}
+            scl=${{ github.event.client_payload.scl }}
+            mosi=${{ github.event.client_payload.mosi }}
+            miso=${{ github.event.client_payload.miso }}
+            sck=${{ github.event.client_payload.sck }}
+            cs=${{ github.event.client_payload.cs }}
+            int0=${{ github.event.client_payload.int0 }}
+            led=${{ github.event.client_payload.led }}
+            clk_pin=${{ github.event.client_payload.clk_pin }}
+            vcc=${{ github.event.client_payload.vcc }}

@@ -1,4 +1,4 @@
-name: Build SlimeNRF Tracker (Manual I2C/SPI Choice)
+name: Build SlimeNRF Tracker (Manual I2C/SPI)
 
 on:
   workflow_dispatch:
@@ -27,8 +27,11 @@ jobs:
       FILEFORMAT: "uf2"
 
     steps:
-      - name: 💻 Acquire code
+      # 把本 repo checkout 到 manifest 子資料夾 (與原始工作流一致)
+      - name: 💻 Acquire code into workspace/SlimeNRF-CI
         uses: actions/checkout@v5
+        with:
+          path: zephyr-workspace/SlimeNRF-CI
 
       - name: 🧰 Install Dependencies + West
         run: |
@@ -47,18 +50,17 @@ jobs:
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
-      - name: ♻️ Initialize Zephyr Workspace
+      - name: ♻️ Initialize Zephyr Workspace (use manifest in SlimeNRF-CI)
         run: |
-          mkdir -p zephyr-workspace
           cd zephyr-workspace
-          west init -l ../
+          rm -rf .west
+          west init -l SlimeNRF-CI
           west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: 🔧 Preparing Build Environment
+      - name: 🔧 Prepare output dir
         run: |
-          cd zephyr-workspace
-          mkdir -p Releases
+          mkdir -p zephyr-workspace/Releases
 
       - name: 🧮 Derive names from input
         run: |
@@ -69,11 +71,12 @@ jobs:
           echo "BOARD=${BOARD_PREFIX}${CONN}" >> $GITHUB_ENV
           echo "OUTPUT_NAME=${FILENAME_PREFIX}${CONN_UPPER}_ProMicro" >> $GITHUB_ENV
 
-      - name: ✅ Sanity check paths
+      - name: ✅ Sanity check workspace
         run: |
-          ls -la .
-          ls -la ..
-          test -d ../SlimeVR-Tracker-nRF || (echo "❌ ../SlimeVR-Tracker-nRF 不存在" && exit 1)
+          echo "::group::ls zephyr-workspace"
+          ls -la zephyr-workspace
+          echo "::endgroup::"
+          test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "❌ SlimeVR-Tracker-nRF 不在 workspace，檢查 west.yml 是否包含它"; exit 1)
 
       - name: 🔨 Build Firmware
         run: |
@@ -81,16 +84,16 @@ jobs:
           echo "🏗️ Building for board: $BOARD"
           echo "📦 Output file: $OUTPUT_NAME.${FILEFORMAT}"
 
-          # 修正1：使用正確的來源專案路徑 ../SlimeVR-Tracker-nRF
+          # 來源路徑改為相對於 workspace 的目錄：SlimeVR-Tracker-nRF
           west build \
               --board "$BOARD" \
-              --pristine=always ../SlimeVR-Tracker-nRF \
+              --pristine=always SlimeVR-Tracker-nRF \
               --build-dir build \
               -- \
               -DNCS_TOOLCHAIN_VERSION=NONE \
               -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
-          # 修正2：產物在 build/zephyr/ 不是 build/SlimeVR-Tracker-nRF/zephyr/
+          # 產物位置：build/zephyr/zephyr.uf2
           mv build/zephyr/zephyr.${FILEFORMAT} "Releases/$OUTPUT_NAME.${FILEFORMAT}"
 
       - name: 💾 Upload Artifact
@@ -99,6 +102,7 @@ jobs:
           name: ${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           path: zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
 
+      # 如不想覆蓋 release，可移除此步驟
       - name: 📁 Create/Update Github Release
         uses: mini-bomba/create-github-release@v1.2.0
         with:

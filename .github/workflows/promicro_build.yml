@@ -1,0 +1,309 @@
+name: Build (Preset / Custom, Stacked / non-Stacked)
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Zephyr board（例如 promicro_uf2/nrf52840/i2c, xiao_ble/nrf52840）"
+        required: true
+        type: choice
+        options:
+          - promicro_uf2/nrf52840/i2c
+          - promicro_uf2/nrf52840/spi
+          - promicro_uf2/nrf52840/smspi
+          - xiao_ble/nrf52840
+          - slimevrmini_p4_uf2/nrf52833
+          - mochi_uf2/nrf52833
+          - nrf52840dongle/nrf52840
+
+      wiring:
+        description: "ProMicro 接線（non-Stacked=default / Stacked=stacked）"
+        required: true
+        type: choice
+        options: [default, stacked]
+        default: default
+
+      pinmode:
+        description: "腳位模式（preset=預設 / custom=自行填寫以下 pin）"
+        required: true
+        type: choice
+        options: [preset, custom]
+        default: preset
+
+      # 介面開關
+      clk:
+        description: "外部時鐘（enabled/disabled）"
+        required: true
+        type: choice
+        options: [enabled, disabled]
+        default: enabled
+      sleep:
+        description: "睡眠模式（enabled/disabled）"
+        required: true
+        type: choice
+        options: [enabled, disabled]
+        default: enabled
+      sw0:
+        description: "SW0 按鍵（enabled/disabled）"
+        required: true
+        type: choice
+        options: [enabled, disabled]
+        default: enabled
+      magnetometer:
+        description: "磁力計（enabled/disabled）"
+        required: true
+        type: choice
+        options: [enabled, disabled]
+        default: enabled
+
+      filename:
+        description: "輸出檔名（不含副檔名；會自動產生 .uf2 / .hex）"
+        required: true
+        type: string
+        default: "SlimeNRF_Tracker_build"
+
+      # 自訂腳位（pinmode=custom 時才會用到；留空會走預設值）
+      sda:     { required: false, type: string, description: "I2C SDA  (e.g. 26 或 P0.26)" }
+      scl:     { required: false, type: string, description: "I2C SCL  (e.g. 27 或 P0.27)" }
+      mosi:    { required: false, type: string, description: "SPI MOSI (e.g. 20 或 P0.20)" }
+      miso:    { required: false, type: string, description: "SPI MISO (e.g. 24 或 P0.24)" }
+      sck:     { required: false, type: string, description: "SPI SCK  (e.g. 8 或 P0.08)" }
+      cs:      { required: false, type: string, description: "SPI CS   (e.g. 22 或 P0.22)" }
+      int0:    { required: false, type: string, description: "INT0（int0-gpios）(e.g. 17)" }
+      led:     { required: false, type: string, description: "LED（led-gpios）(e.g. 15)" }
+      clk_pin: { required: false, type: string, description: "CLK（clk-gpios）(e.g. 20)" }
+      vcc:     { required: false, type: string, description: "VCC EN（vcc-gpios）(e.g. 31)" }
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🧰 Install deps
+        run: |
+          set -eux
+          sudo apt-get update && sudo apt-get install -y \
+            git cmake ninja-build gperf dfu-util device-tree-compiler \
+            python3-pip python3-setuptools python3-wheel wget xz-utils
+          pip3 install --upgrade west
+
+      - name: 🪁 Zephyr SDK
+        run: |
+          set -eux
+          wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
+          tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
+          ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
+
+      - name: ♻️ Init workspace
+        run: |
+          set -eux
+          west init -l .
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: 🔎 Derive APP / IFACE
+        id: meta
+        shell: bash
+        run: |
+          set -eux
+          BOARD="${{ inputs.board }}"
+          WIRING="${{ inputs.wiring }}"
+          APP="SlimeVR-Tracker-nRF"
+          if [[ "$BOARD" == promicro_uf2/* && "$WIRING" == "stacked" ]]; then
+            APP="Stacked-SmolSlime"
+          fi
+          IFACE="$(awk -F'/' '{print $3}' <<< "$BOARD")"  # 可能為空（像 xiao_ble）
+          echo "app=$APP"     >> "$GITHUB_OUTPUT"
+          echo "iface=$IFACE" >> "$GITHUB_OUTPUT"
+          echo "Using APP=$APP, IFACE=${IFACE:-<none>}, BOARD=$BOARD"
+
+      - name: 📎 (Stacked 專用) 複製演算法庫到 APP
+        if: ${{ steps.meta.outputs.app == 'Stacked-SmolSlime' }}
+        run: |
+          set -eux
+          # 某些 Stacked 專案需要把以下目錄帶過去（與你原本 CI 一致）
+          cp -r SlimeVR-Tracker-nRF/vqf-c                     Stacked-SmolSlime/ || true
+          cp -r SlimeVR-Tracker-nRF/Fusion                    Stacked-SmolSlime/ || true
+          cp -r SlimeVR-Tracker-nRF/NXP-ISSDK-SensorFusion    Stacked-SmolSlime/ || true
+
+      - name: 🔧 Apply Kconfig toggles（clock / sleep / mag / sw0）
+        run: |
+          set -eux
+          APP="${{ steps.meta.outputs.app }}"
+          {
+            echo ""
+            if [[ "${{ inputs.clk }}" == "enabled" ]];   then echo "CONFIG_USE_SENSOR_CLOCK=y"; else echo "CONFIG_USE_SENSOR_CLOCK=n"; fi
+            if [[ "${{ inputs.sleep }}" == "enabled" ]]; then
+              echo "CONFIG_USE_IMU_WAKE_UP=y"
+              echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
+            else
+              echo "CONFIG_USE_IMU_WAKE_UP=n"
+              echo "CONFIG_USE_ACTIVE_TIMEOUT=n"
+              echo "CONFIG_SENSOR_LP_TIMEOUT=300000"
+              echo "CONFIG_SENSOR_USE_LOW_POWER_2=n"
+            fi
+            if [[ "${{ inputs.magnetometer }}" == "enabled" ]]; then echo "CONFIG_SENSOR_USE_MAG=y"; else echo "CONFIG_SENSOR_USE_MAG=n"; fi
+            if [[ "${{ inputs.sw0 }}" == "enabled" ]]; then echo "CONFIG_USER_SW0=y"; else echo "CONFIG_USER_SW0=n"; fi
+          } >> "${APP}/prj.conf"
+
+      - name: 🧩 Generate custom DTS overlay（pinmode=custom）
+        if: ${{ inputs.pinmode == 'custom' }}
+        run: |
+          set -eux
+          mkdir -p custom_overlay
+
+          normalize () { v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
+          SDA=$(normalize "${{ inputs.sda }}");     SCL=$(normalize "${{ inputs.scl }}")
+          MOSI=$(normalize "${{ inputs.mosi }}");   MISO=$(normalize "${{ inputs.miso }}")
+          SCK=$(normalize "${{ inputs.sck }}");     CS=$(normalize "${{ inputs.cs }}")
+          INT0=$(normalize "${{ inputs.int0 }}");   LED=$(normalize "${{ inputs.led }}")
+          CLKPIN=$(normalize "${{ inputs.clk_pin }}"); VCC=$(normalize "${{ inputs.vcc }}")
+
+          # 預設值（避免空字串）
+          : "${SDA:=6}"  ; : "${SCL:=8}"
+          : "${MOSI:=6}" ; : "${MISO:=24}" ; : "${SCK:=8}" ; : "${CS:=22}"
+          : "${INT0:=17}" ; : "${LED:=15}" ; : "${CLKPIN:=20}" ; : "${VCC:=31}"
+
+          IFACE="${{ steps.meta.outputs.iface }}"
+
+          {
+            echo "/* Auto-generated custom overlay */"
+            echo "&zephyr_user {"
+            echo "  int0-gpios = <&gpio0 ${INT0} 0>;"
+            echo "  led-gpios  = <&gpio0 ${LED} 0>;"
+            echo "  clk-gpios  = <&gpio0 ${CLKPIN} 0>;"
+            echo "  vcc-gpios  = <&gpio0 ${VCC} GPIO_ACTIVE_HIGH>;"
+            echo "};"
+          } > custom_overlay/custom.overlay
+
+          if [[ -z "$IFACE" || "$IFACE" == "i2c" ]]; then
+            cat <<'EOF' >> custom_overlay/custom.overlay
+&i2c0 {
+  status = "okay";
+  pinctrl-0 = <&i2c0_default_custom>;
+  pinctrl-1 = <&i2c0_sleep_custom>;
+};
+&pinctrl {
+  i2c0_default_custom: i2c0_default_custom {
+    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, __SDA__)>, <NRF_PSEL(TWIM_SCL, 0, __SCL__)>; };
+  };
+  i2c0_sleep_custom: i2c0_sleep_custom {
+    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, __SDA__)>, <NRF_PSEL(TWIM_SCL, 0, __SCL__)>; low-power-enable; };
+  };
+};
+EOF
+            sed -i "s/__SDA__/${SDA}/g; s/__SCL__/${SCL}/g" custom_overlay/custom.overlay
+          else
+            # spi / smspi 都走 SPIM3 的 overlay（與你現有 CI 一致）
+            cat <<'EOF' >> custom_overlay/custom.overlay
+&spi3 {
+  status = "okay";
+  pinctrl-0 = <&spi3_default_custom>;
+  pinctrl-1 = <&spi3_sleep_custom>;
+  cs-gpios = <&gpio0 __CS__ GPIO_ACTIVE_LOW>;
+};
+&pinctrl {
+  spi3_default_custom: spi3_default_custom {
+    group1 {
+      psels = <NRF_PSEL(SPIM_MISO, 0, __MISO__)>,
+              <NRF_PSEL(SPIM_MOSI, 0, __MOSI__)>,
+              <NRF_PSEL(SPIM_SCK, 0, __SCK__)>;
+    };
+  };
+  spi3_sleep_custom: spi3_sleep_custom {
+    group1 {
+      psels = <NRF_PSEL(SPIM_MISO, 0, __MISO__)>,
+              <NRF_PSEL(SPIM_MOSI, 0, __MOSI__)>,
+              <NRF_PSEL(SPIM_SCK, 0, __SCK__)>;
+      low-power-enable;
+    };
+  };
+};
+EOF
+            sed -i "s/__MISO__/${MISO}/g; s/__MOSI__/${MOSI}/g; s/__SCK__/${SCK}/g; s/__CS__/${CS}/g" custom_overlay/custom.overlay
+          fi
+
+      - name: 🔨 Build
+        run: |
+          set -eux
+          APP="${{ steps.meta.outputs.app }}"
+          BOARD="${{ inputs.board }}"
+          mkdir -p build
+          if [[ "${{ inputs.pinmode }}" == "custom" ]]; then
+            west build --board "$BOARD" "$APP" --pristine=always -d build -- \
+              -DNCS_TOOLCHAIN_VERSION=NONE \
+              -DBOARD_ROOT=../"$APP" \
+              -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay
+          else
+            west build --board "$BOARD" "$APP" --pristine=always -d build -- \
+              -DNCS_TOOLCHAIN_VERSION=NONE \
+              -DBOARD_ROOT=../"$APP"
+          fi
+
+      - name: 🧾 Job Summary（輸出選項表）
+        run: |
+          {
+            echo "## Build Summary"
+            echo ""
+            echo "| Key | Value |"
+            echo "|-----|-------|"
+            echo "| Board | \`${{ inputs.board }}\` |"
+            echo "| Wiring | \`${{ inputs.wiring }}\` |"
+            echo "| APP | \`${{ steps.meta.outputs.app }}\` |"
+            echo "| Interface | \`${{ steps.meta.outputs.iface || 'n/a' }}\` |"
+            echo "| Pin Mode | \`${{ inputs.pinmode }}\` |"
+            echo "| Clock | \`${{ inputs.clk }}\` |"
+            echo "| Sleep | \`${{ inputs.sleep }}\` |"
+            echo "| SW0 | \`${{ inputs.sw0 }}\` |"
+            echo "| Magnetometer | \`${{ inputs.magnetometer }}\` |"
+            echo "| Filename | \`${{ inputs.filename }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📦 Collect outputs（用你指定的檔名複製出來）
+        run: |
+          set -eux
+          mkdir -p output
+          # 只要存在就複製；兩種格式都嘗試
+          [[ -f build/zephyr/zephyr.uf2 ]] && cp build/zephyr/zephyr.uf2 "output/${{ inputs.filename }}.uf2"
+          [[ -f build/zephyr/zephyr.hex ]] && cp build/zephyr/zephyr.hex "output/${{ inputs.filename }}.hex"
+
+      - name: 🗓️ Tag
+        id: meta2
+        run: |
+          echo "tag=build-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+          echo "ts=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_OUTPUT"
+
+      - name: 🚀 Release（附上 Markdown 表格）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta2.outputs.tag }}
+          name: "Firmware ${{ steps.meta2.outputs.tag }}"
+          body: |
+            **SlimeNRF Firmware Build**
+
+            | Key | Value |
+            |-----|-------|
+            | Board | `${{ inputs.board }}` |
+            | Wiring | `${{ inputs.wiring }}` |
+            | APP | `${{ steps.meta.outputs.app }}` |
+            | Interface | `${{ steps.meta.outputs.iface || 'n/a' }}` |
+            | Pin Mode | `${{ inputs.pinmode }}` |
+            | Clock | `${{ inputs.clk }}` |
+            | Sleep | `${{ inputs.sleep }}` |
+            | SW0 | `${{ inputs.sw0 }}` |
+            | Magnetometer | `${{ inputs.magnetometer }}` |
+            | Filename | `${{ inputs.filename }}` |
+            | Built | ${{ steps.meta2.outputs.ts }} |
+
+            下載附件（.uf2 / .hex 如有其一或兩者）。
+          files: |
+            output/${{ inputs.filename }}.uf2
+            output/${{ inputs.filename }}.hex
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

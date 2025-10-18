@@ -32,7 +32,7 @@ jobs:
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
       SENSOR_CLOCK: "enabled"
-      EXTRA_ACTIONS:"disabled"
+      EXTRA_ACTIONS: "disabled"
       SW0_BUTTON:   "disabled"
     # ===== 集中設定結束 =====
 

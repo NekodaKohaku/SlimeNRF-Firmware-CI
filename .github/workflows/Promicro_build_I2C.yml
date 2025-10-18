@@ -18,7 +18,7 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # --- ピン設定---
+      # --- ピン設定（ここを直接編集）---
       SDA: "P0.06"
       SCL: "P0.08"
       PWM0: "P0.15"
@@ -28,7 +28,7 @@ jobs:
       INT:  "P0.17"
       VCC:  "P0.31"
 
-      # --- 機能スイッチ---
+      # --- 機能スイッチ（enabled/disabled）---
       MAGNETOMETER: "enabled"
       SLEEP:        "disabled"
       SENSOR_CLOCK: "enabled"
@@ -217,7 +217,7 @@ jobs:
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-NRF/prj.conf
 
       - name: Disable Sleep
         if: env.SLEEP == 'disabled'
@@ -284,14 +284,11 @@ jobs:
           name: "Latest Firmware"
           body: |
             Manual build of the SlimeNRF Tracker Firmware.
-            Board: ${{ env.BOARD }}
+            Board: ${{ env.BOARD }} (Conn: I2C)
             Features:
               MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
               CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
               SW0=${{ env.SW0_BUTTON }}
-            Pins:
-              SDA=${{ env.SDA }}, SCL=${{ env.SCL }}
-              PWM0=${{ env.PWM0 }}, SW0=${{ env.SW0 }}
-              LED=${{ env.LED }}, CLK=${{ env.CLK }}
-              INT=${{ env.INT }}, VCC=${{ env.VCC }}
-
+          files: |
+            zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
+          clear_attachments: true

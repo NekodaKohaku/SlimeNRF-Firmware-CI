@@ -93,35 +93,9 @@ jobs:
         run: |
           set -euxo pipefail
           cd ncs
-          # 如需改成你的 fork，換 URL
+          # 若你有 fork，這行改成你的倉庫 URL
           git clone --depth 1 https://github.com/SlimeVR/SlimeVR-Tracker-nRF.git SlimeVR-Tracker-nRF
           test -f SlimeVR-Tracker-nRF/CMakeLists.txt
-
-      - name: 🔎 Detect promicro board id
-        id: detect
-        run: |
-          set -euxo pipefail
-          cd ncs
-          APP_DIR="$(pwd)/SlimeVR-Tracker-nRF"
-
-          echo "### west boards (BOARD_ROOT=APP_DIR)" >> "$GITHUB_STEP_SUMMARY"
-          west boards --board-root "$APP_DIR" >> "$GITHUB_STEP_SUMMARY" || true
-
-          BOARD_BASE=""
-          for cand in "promicro_uf2/nrf52840" "promicro_uf2"; do
-            if west boards --format='{name}' --board-root "$APP_DIR" | grep -x "$cand" >/dev/null 2>&1; then
-              BOARD_BASE="$cand"
-              break
-            fi
-          done
-
-          if [ -z "$BOARD_BASE" ]; then
-            echo "::error::找不到 promicro 板定義於 ${APP_DIR}/boards/**，請確認 repo 內的 boards 目錄與名稱"
-            exit 1
-          fi
-
-          echo "board_base=$BOARD_BASE" >> "$GITHUB_OUTPUT"
-          echo "Detected BOARD_BASE=$BOARD_BASE"
 
       - name: 🔧 Generate kconfig_user.conf (toggles)
         run: |
@@ -157,20 +131,18 @@ jobs:
             echo "CONFIG_USER_SW0=n" >> kconfig_user.conf
           fi
 
-      - name: 🧩 Generate DTS overlay (force iface; preset 或 custom 都會產生)
+      - name: 🧩 (pinmode=custom) create DTS overlay
+        if: ${{ inputs.pinmode == 'custom' }}
         run: |
           set -euxo pipefail
           cd ncs
-          IFACE="${{ inputs.iface }}"
           PINS="${{ inputs.pins }}"
-
-          # 解析 pins；preset 也會用到預設值（與你之前 CI 相同）
           getkv() { echo "$PINS" | grep -oE "(^|[,[:space:]])$1=[^,[:space:]]+" | tail -n1 | sed -E "s/.*$1=//"; }
           norm(){ v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
 
           SDA=$(norm "$(getkv sda)");   SCL=$(norm "$(getkv scl)")
           MOSI=$(norm "$(getkv mosi)"); MISO=$(norm "$(getkv miso)")
-          SCK=$(norm "$(getkv sck))");  CS=$(norm "$(getkv cs)")
+          SCK=$(norm "$(getkv sck)");   CS=$(norm "$(getkv cs)")
           INT0=$(norm "$(getkv int0)"); LED=$(norm "$(getkv led)")
           CLKPIN=$(norm "$(getkv clk_pin)"); VCC=$(norm "$(getkv vcc)")
 
@@ -178,9 +150,10 @@ jobs:
           : "${MOSI:=6}" ; : "${MISO:=24}" ; : "${SCK:=8}" ; : "${CS:=22}"
           : "${INT0:=17}" ; : "${LED:=15}" ; : "${CLKPIN:=20}" ; : "${VCC:=31}"
 
+          IFACE="${{ inputs.iface }}"
           mkdir -p custom_overlay
           {
-            echo "/* Auto-generated overlay for ProMicro: iface=$IFACE */"
+            echo "/* Auto-generated overlay for ProMicro */"
             echo "&zephyr_user {"
             echo "  int0-gpios = <&gpio0 ${INT0} 0>;"
             echo "  led-gpios  = <&gpio0 ${LED} 0>;"
@@ -233,28 +206,34 @@ jobs:
             } >> custom_overlay/custom.overlay
           fi
 
-      - name: 🔨 Build (west)
+      - name: 🔨 Build（把 build 放在 app 目錄內，模仿你原本的腳本）
         run: |
           set -euxo pipefail
           cd ncs
-          APP_DIR="$(pwd)/SlimeVR-Tracker-nRF"
-          BOARD_BASE="${{ steps.detect.outputs.board_base }}"
-          BOARD="$BOARD_BASE"   # 不再依賴 /i2c /spi 變體
+          BOARD="promicro_uf2/nrf52840/${{ inputs.iface }}"
+          APP="SlimeVR-Tracker-nRF"
+          rm -rf "${APP}/build"
+          mkdir -p "${APP}/build"
 
-          mkdir -p build
-          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=${APP_DIR} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay"
+          EXTRA_ARGS="-DNCS_TOOLCHAIN_VERSION=NONE -DBOARD_ROOT=../${APP} -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf"
+          if [ "${{ inputs.pinmode }}" = "custom" ]; then
+            EXTRA_ARGS="${EXTRA_ARGS} -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay"
+          fi
 
-          west build --board "$BOARD" "$APP_DIR" --pristine=always -d build -- ${EXTRA_ARGS}
+          west build \
+            --board "$BOARD" \
+            --pristine=always "${APP}" \
+            --build-dir "${APP}/build" \
+            -- ${EXTRA_ARGS}
 
-      - name: 🧾 Summary
+      - name: 🧾 Job Summary
         run: |
           {
             echo "## Build Summary"
             echo ""
             echo "| Key | Value |"
             echo "|-----|-------|"
-            echo "| Board | \`${{ steps.detect.outputs.board_base }}\` |"
-            echo "| Interface | \`${{ inputs.iface }}\` |"
+            echo "| Board | \`promicro_uf2/nrf52840/${{ inputs.iface }}\` |"
             echo "| Pin Mode | \`${{ inputs.pinmode }}\` |"
             echo "| Clock | \`${{ inputs.clk }}\` |"
             echo "| Sleep | \`${{ inputs.sleep }}\` |"
@@ -271,8 +250,17 @@ jobs:
           set -euxo pipefail
           cd ncs
           mkdir -p output
-          test -f build/zephyr/zephyr.uf2 && cp build/zephyr/zephyr.uf2 "output/${{ inputs.filename }}.uf2" || true
-          test -f build/zephyr/zephyr.hex && cp build/zephyr/zephyr.hex "output/${{ inputs.filename }}.hex" || true
+          # 兩種可能的輸出結構都兼容
+          for CAND in \
+            SlimeVR-Tracker-nRF/build/zephyr/zephyr.uf2 \
+            SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 ; do
+            if [ -f "$CAND" ]; then cp "$CAND" "output/${{ inputs.filename }}.uf2"; break; fi
+          done
+          for CAND in \
+            SlimeVR-Tracker-nRF/build/zephyr/zephyr.hex \
+            SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.hex ; do
+            if [ -f "$CAND" ]; then cp "$CAND" "output/${{ inputs.filename }}.hex"; break; fi
+          done
 
       - name: 🚀 Release to 'latest'
         uses: softprops/action-gh-release@v2
@@ -282,11 +270,12 @@ jobs:
           body: |
             ProMicro manual build.
 
-            - Base board: `${{ steps.detect.outputs.board_base }}`
             - Interface: `${{ inputs.iface }}`
             - Pin mode: `${{ inputs.pinmode }}`
             - Toggles: clk=${{ inputs.clk }}, sleep=${{ inputs.sleep }}, sw0=${{ inputs.sw0 }}, mag=${{ inputs.magnetometer }}
             - Filename: `${{ inputs.filename }}`
+
+            Download assets below.
           files: |
             ncs/output/${{ inputs.filename }}.uf2
             ncs/output/${{ inputs.filename }}.hex

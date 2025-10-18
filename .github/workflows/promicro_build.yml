@@ -1,59 +1,17 @@
-name: Build ProMicro (Preset / Custom, Stacked / non-Stacked)
+name: Auto Build (ProMicro Matrix, clean release)
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 */12 * * *"   # 每 12 小時
   workflow_dispatch:
-    inputs:
-      bus:
-        description: "匯流排（i2c / spi / smspi）"
-        required: true
-        type: choice
-        options: [i2c, spi, smspi]
-        default: i2c
-      wiring:
-        description: "ProMicro 接線（non-Stacked=default / Stacked=stacked）"
-        required: true
-        type: choice
-        options: [default, stacked]
-        default: default
-      pinmode:
-        description: "腳位模式（preset=預設 / custom=自行填 pins）"
-        required: true
-        type: choice
-        options: [preset, custom]
-        default: preset
-      clk:
-        description: "外部時鐘"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      sleep:
-        description: "睡眠模式"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      sw0:
-        description: "SW0 按鍵"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      magnetometer:
-        description: "磁力計"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      filename:
-        description: "輸出檔名（不含副檔名；會產生 .uf2 / .hex）"
-        required: true
-        type: string
-        default: "SlimeNRF_Tracker_build"
-      pins:
-        description: "自訂腳位（僅 custom；例如：SDA=26 SCL=27 INT0=17 LED=15 CLKPIN=20 VCC=31；或 SPI: MOSI=6 MISO=24 SCK=8 CS=22 …）"
-        required: false
-        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -61,17 +19,33 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ===== non-Stacked =====
+          - { iface: i2c,   wiring: default, clk: enabled,  sleep: enabled,  sw0: disabled, magnetometer: enabled,  filename: "SlimeNRF_Tracker_I2C_ProMicro" }
+          - { iface: i2c,   wiring: default, clk: disabled, sleep: disabled, sw0: disabled, magnetometer: enabled,  filename: "SlimeNRF_Tracker_NoSleep_NoCLK_I2C_ProMicro" }
+          - { iface: spi,   wiring: default, clk: enabled,  sleep: enabled,  sw0: enabled,  magnetometer: enabled,  filename: "SlimeNRF_Tracker_SW0_CLK_SPI_ProMicro" }
+          - { iface: smspi, wiring: default, clk: disabled, sleep: enabled,  sw0: disabled, magnetometer: enabled,  filename: "SlimeNRF_Tracker_smSPI_ProMicro" }
+
+          # ===== Stacked =====
+          - { iface: i2c,   wiring: stacked, clk: enabled,  sleep: enabled,  sw0: enabled,  magnetometer: enabled,  filename: "SlimeNRF_Tracker_I2C_StackedSmol" }
+          - { iface: spi,   wiring: stacked, clk: disabled, sleep: disabled, sw0: enabled,  magnetometer: enabled,  filename: "SlimeNRF_Tracker_NoSleep_NoCLK_SPI_StackedSmol" }
 
     steps:
-      - name: 📦 Checkout
+      - name: 💻 Checkout repo
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: 🧰 Install deps
+      - name: 🧰 Host deps + west
         run: |
           set -eux
-          sudo apt-get update && sudo apt-get install -y \
+          sudo apt-get update
+          sudo apt-get install -y \
             git cmake ninja-build gperf dfu-util device-tree-compiler \
-            python3-pip python3-setuptools python3-wheel wget xz-utils
+            python3-pip python3-setuptools python3-wheel wget xz-utils file
           pip3 install --upgrade west
 
       - name: 🪁 Zephyr SDK
@@ -88,26 +62,26 @@ jobs:
           west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: 🔎 Derive APP / BOARD / IFACE
+      - name: 🔎 Decide BOARD / APP from matrix
         id: meta
         shell: bash
         run: |
-          set -euxo pipefail
-          BUS="${{ inputs.bus }}"
-          BOARD="promicro_uf2/nrf52840/${BUS}"
-          WIRING="${{ inputs.wiring }}"
+          set -eux
+          IFACE="${{ matrix.iface }}"
+          WIRING="${{ matrix.wiring }}"
+          BOARD="promicro_uf2/nrf52840/${IFACE}"
           APP="SlimeVR-Tracker-nRF"
           if [[ "$WIRING" == "stacked" ]]; then
             APP="Stacked-SmolSlime"
           fi
-          IFACE="$BUS" # 這份 workflow 只跑 promicro，所以 iface=bus
-          echo "app=$APP"     >> "$GITHUB_OUTPUT"
           echo "board=$BOARD" >> "$GITHUB_OUTPUT"
-          echo "iface=$IFACE" >> "$GITHUB_OUTPUT"
+          echo "app=$APP"     >> "$GITHUB_OUTPUT"
           echo "iface_print=$IFACE" >> "$GITHUB_OUTPUT"
-          echo "Using APP=$APP, BOARD=$BOARD, IFACE=$IFACE"
+          echo "Using APP=$APP BOARD=$BOARD"
 
-      - name: 📎 (Stacked 專用) 複製演算法庫到 APP
+          test -d "$APP" || { echo "::error::App dir '$APP' not found"; exit 1; }
+
+      - name: 📎 (Stacked only) copy fusion libs
         if: ${{ steps.meta.outputs.app == 'Stacked-SmolSlime' }}
         run: |
           set -eux
@@ -115,14 +89,13 @@ jobs:
           cp -r SlimeVR-Tracker-nRF/Fusion                 Stacked-SmolSlime/ || true
           cp -r SlimeVR-Tracker-nRF/NXP-ISSDK-SensorFusion Stacked-SmolSlime/ || true
 
-      - name: 🔧 Apply Kconfig toggles（clock / sleep / mag / sw0）
+      - name: 🔧 Generate kconfig overlay (no touching prj.conf)
         run: |
           set -eux
-          APP="${{ steps.meta.outputs.app }}"
+          : > kconfig_user.conf
           {
-            echo ""
-            if [[ "${{ inputs.clk }}" == "enabled" ]];   then echo "CONFIG_USE_SENSOR_CLOCK=y"; else echo "CONFIG_USE_SENSOR_CLOCK=n"; fi
-            if [[ "${{ inputs.sleep }}" == "enabled" ]]; then
+            if [[ "${{ matrix.clk }}" == "enabled" ]];   then echo "CONFIG_USE_SENSOR_CLOCK=y"; else echo "CONFIG_USE_SENSOR_CLOCK=n"; fi
+            if [[ "${{ matrix.sleep }}" == "enabled" ]]; then
               echo "CONFIG_USE_IMU_WAKE_UP=y"
               echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
             else
@@ -131,99 +104,11 @@ jobs:
               echo "CONFIG_SENSOR_LP_TIMEOUT=300000"
               echo "CONFIG_SENSOR_USE_LOW_POWER_2=n"
             fi
-            if [[ "${{ inputs.magnetometer }}" == "enabled" ]]; then echo "CONFIG_SENSOR_USE_MAG=y"; else echo "CONFIG_SENSOR_USE_MAG=n"; fi
-            if [[ "${{ inputs.sw0 }}" == "enabled" ]]; then echo "CONFIG_USER_SW0=y"; else echo "CONFIG_USER_SW0=n"; fi
-          } >> "${APP}/prj.conf"
-
-      - name: 🧩 Generate custom DTS overlay（pinmode=custom）
-        if: ${{ inputs.pinmode == 'custom' }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p custom_overlay
-          PINS_STR="${{ inputs.pins }}"
-          # 去除 P0./P1. 前綴 + 大寫 key
-          norm_pin () { v="$1"; v="${v/P0./}"; v="${v/P1./}"; printf "%s" "$v"; }
-
-          # 預設值（避免空字串）
-          SDA=6; SCL=8; MOSI=6; MISO=24; SCK=8; CS=22; INT0=17; LED=15; CLKPIN=20; VCC=31
-
-          # 解析 "KEY=VAL KEY=VAL ..." 形式的輸入
-          for kv in $PINS_STR; do
-            key="${kv%%=*}"; val="${kv#*=}"
-            key="$(echo "$key" | tr '[:lower:]' '[:upper:]')"
-            val="$(norm_pin "$val")"
-            case "$key" in
-              SDA) SDA="$val" ;;
-              SCL) SCL="$val" ;;
-              MOSI) MOSI="$val" ;;
-              MISO) MISO="$val" ;;
-              SCK) SCK="$val" ;;
-              CS)  CS="$val" ;;
-              INT0) INT0="$val" ;;
-              LED) LED="$val" ;;
-              CLKPIN) CLKPIN="$val" ;;
-              VCC) VCC="$val" ;;
-            esac
-          done
-
-          IFACE="${{ steps.meta.outputs.iface }}"
-
-          # 先寫通用節點
-          {
-            echo "/* Auto-generated custom overlay */"
-            echo "&zephyr_user {"
-            echo "  int0-gpios = <&gpio0 ${INT0} 0>;"
-            echo "  led-gpios  = <&gpio0 ${LED} 0>;"
-            echo "  clk-gpios  = <&gpio0 ${CLKPIN} 0>;"
-            echo "  vcc-gpios  = <&gpio0 ${VCC} GPIO_ACTIVE_HIGH>;"
-            echo "};"
-          } > custom_overlay/custom.overlay
-
-          # 依 bus 追加 I2C 或 SPI3 節點
-          if [[ "$IFACE" == "i2c" ]]; then
-            {
-              echo "&i2c0 {"
-              echo "  status = \"okay\";"
-              echo "  pinctrl-0 = <&i2c0_default_custom>;"
-              echo "  pinctrl-1 = <&i2c0_sleep_custom>;"
-              echo "};"
-              echo "&pinctrl {"
-              echo "  i2c0_default_custom: i2c0_default_custom {"
-              echo "    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, ${SDA})>, <NRF_PSEL(TWIM_SCL, 0, ${SCL})>; };"
-              echo "  };"
-              echo "  i2c0_sleep_custom: i2c0_sleep_custom {"
-              echo "    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, ${SDA})>, <NRF_PSEL(TWIM_SCL, 0, ${SCL})>; low-power-enable; };"
-              echo "  };"
-              echo "};"
-            } >> custom_overlay/custom.overlay
-          else
-            {
-              echo "&spi3 {"
-              echo "  status = \"okay\";"
-              echo "  pinctrl-0 = <&spi3_default_custom>;"
-              echo "  pinctrl-1 = <&spi3_sleep_custom>;"
-              echo "  cs-gpios = <&gpio0 ${CS} GPIO_ACTIVE_LOW>;"
-              echo "};"
-              echo "&pinctrl {"
-              echo "  spi3_default_custom: spi3_default_custom {"
-              echo "    group1 {"
-              echo "      psels = <NRF_PSEL(SPIM_MISO, 0, ${MISO})>,"
-              echo "              <NRF_PSEL(SPIM_MOSI, 0, ${MOSI})>,"
-              echo "              <NRF_PSEL(SPIM_SCK, 0, ${SCK})>;"
-              echo "    };"
-              echo "  };"
-              echo "  spi3_sleep_custom: spi3_sleep_custom {"
-              echo "    group1 {"
-              echo "      psels = <NRF_PSEL(SPIM_MISO, 0, ${MISO})>,"
-              echo "              <NRF_PSEL(SPIM_MOSI, 0, ${MOSI})>,"
-              echo "              <NRF_PSEL(SPIM_SCK, 0, ${SCK})>;"
-              echo "      low-power-enable;"
-              echo "    };"
-              echo "  };"
-              echo "};"
-            } >> custom_overlay/custom.overlay
-          fi
+            if [[ "${{ matrix.magnetometer }}" == "enabled" ]]; then echo "CONFIG_SENSOR_USE_MAG=y"; else echo "CONFIG_SENSOR_USE_MAG=n"; fi
+            if [[ "${{ matrix.sw0 }}" == "enabled" ]]; then echo "CONFIG_USER_SW0=y"; else echo "CONFIG_USER_SW0=n"; fi
+          } >> kconfig_user.conf
+          echo "--- kconfig_user.conf ---"
+          cat kconfig_user.conf
 
       - name: 🔨 Build
         run: |
@@ -231,74 +116,60 @@ jobs:
           APP="${{ steps.meta.outputs.app }}"
           BOARD="${{ steps.meta.outputs.board }}"
           mkdir -p build
-          if [[ "${{ inputs.pinmode }}" == "custom" ]]; then
-            west build --board "$BOARD" "$APP" --pristine=always -d build -- \
-              -DNCS_TOOLCHAIN_VERSION=NONE \
-              -DBOARD_ROOT=../"$APP" \
-              -DDTC_OVERLAY_FILE=$(pwd)/custom_overlay/custom.overlay
-          else
-            west build --board "$BOARD" "$APP" --pristine=always -d build -- \
-              -DNCS_TOOLCHAIN_VERSION=NONE \
-              -DBOARD_ROOT=../"$APP"
-          fi
+          west build --board "$BOARD" "$APP" --pristine=always -d build -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../"$APP" \
+            -DEXTRA_CONF_FILE=$(pwd)/kconfig_user.conf
 
-      - name: 🧾 Job Summary
-        run: |
-          {
-            echo "## Build Summary"
-            echo ""
-            echo "| Key | Value |"
-            echo "|-----|-------|"
-            echo "| Board | \`${{ steps.meta.outputs.board }}\` |"
-            echo "| Wiring | \`${{ inputs.wiring }}\` |"
-            echo "| APP | \`${{ steps.meta.outputs.app }}\` |"
-            echo "| Interface | \`${{ steps.meta.outputs.iface_print }}\` |"
-            echo "| Pin Mode | \`${{ inputs.pinmode }}\` |"
-            echo "| Clock | \`${{ inputs.clk }}\` |"
-            echo "| Sleep | \`${{ inputs.sleep }}\` |"
-            echo "| SW0 | \`${{ inputs.sw0 }}\` |"
-            echo "| Magnetometer | \`${{ inputs.magnetometer }}\` |"
-            echo "| Filename | \`${{ inputs.filename }}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 📦 Collect outputs
+      - name: 📦 Collect artifact
         run: |
           set -eux
-          mkdir -p output
-          [[ -f build/zephyr/zephyr.uf2 ]] && cp build/zephyr/zephyr.uf2 "output/${{ inputs.filename }}.uf2"
-          [[ -f build/zephyr/zephyr.hex ]] && cp build/zephyr/zephyr.hex "output/${{ inputs.filename }}.hex"
+          mkdir -p zephyr-workspace/Releases
+          if [[ -f build/zephyr/zephyr.uf2 ]]; then
+            cp build/zephyr/zephyr.uf2 "zephyr-workspace/Releases/${{ matrix.filename }}.uf2"
+          fi
+          if [[ -f build/zephyr/zephyr.hex ]]; then
+            cp build/zephyr/zephyr.hex "zephyr-workspace/Releases/${{ matrix.filename }}.hex"
+          fi
+          ls -la zephyr-workspace/Releases
 
-      - name: 🗓️ Tag
-        id: meta2
-        run: |
-          echo "tag=build-$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
-          echo "ts=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_OUTPUT"
+      - name: ⏫ Upload per-matrix artifact (for Actions page)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.filename }}
+          path: zephyr-workspace/Releases/*
 
-      - name: 🚀 Release
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 💻 Checkout (empty – just to own workspace)
+        uses: actions/checkout@v4
+
+      - name: ⬇️ Download all artifacts from matrix
+        uses: actions/download-artifact@v4
+        with:
+          path: collected
+
+      - name: 🧹 Delete existing 'latest' release + tag (clean replace)
+        uses: dev-drprasad/delete-tag-and-release@v1.0
+        with:
+          tag_name: latest
+          delete_release: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🚀 Create fresh 'latest' release with all files
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta2.outputs.tag }}
-          name: "Firmware ${{ steps.meta2.outputs.tag }}"
+          tag_name: latest
+          name: Latest Firmware
           body: |
-            **SlimeNRF Firmware Build (ProMicro)**
-
-            | Key | Value |
-            |-----|-------|
-            | Board | `${{ steps.meta.outputs.board }}` |
-            | Wiring | `${{ inputs.wiring }}` |
-            | APP | `${{ steps.meta.outputs.app }}` |
-            | Interface | `${{ steps.meta.outputs.iface_print }}` |
-            | Pin Mode | `${{ inputs.pinmode }}` |
-            | Clock | `${{ inputs.clk }}` |
-            | Sleep | `${{ inputs.sleep }}` |
-            | SW0 | `${{ inputs.sw0 }}` |
-            | Magnetometer | `${{ inputs.magnetometer }}` |
-            | Filename | `${{ inputs.filename }}` |
-            | Built | ${{ steps.meta2.outputs.ts }} |
-
-            下載附件（.uf2 / .hex，視板子而定）。
+            Automated matrix build of ProMicro firmware.
+            - App variants: SlimeVR-Tracker-nRF / Stacked-SmolSlime
+            - Interfaces: i2c / spi / smspi
+            - Toggles: clk / sleep / sw0 / magnetometer
           files: |
-            output/${{ inputs.filename }}.uf2
-            output/${{ inputs.filename }}.hex
+            collected/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,183 +1,128 @@
-# 1. 觸發器：修改為僅手動
+name: Build ProMicro I2C (manual, single target)
+
 on:
   workflow_dispatch:
 
-# 允許一個並行部署
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-# 權限：保持 write-all 以便上傳 Release
-permissions: write-all
+permissions:
+  contents: write
 
 jobs:
   build:
-    # 2. 移除 strategy: matrix:
-    #    不再需要 continue-on-error 或 fail-fast
     runs-on: ubuntu-latest
-    steps:
-      # 3. 移除 "Put commit hash/name" (簡化)
 
-      - name: 🧹 Clean Landing Site
-        run: |
-          sudo rm -rf zephyr-workspace/SlimeNRF-CI
-      
-      - uses: actions/checkout@v5
+    steps:
+      - name: 💻 Checkout CI repo into workspace
+        uses: actions/checkout@v4
         with:
-          # 依然需要將 repo 放在子目錄中
           path: zephyr-workspace/SlimeNRF-CI
 
-      - name: 🧰 Install Dependencies + West
+      - name: 🧰 Install host deps + west
         run: |
-          sudo apt-get update && sudo apt install --no-install-recommends \
-          git \
-          cmake \
-          ninja-build \
-          gperf \
-          ccache \
-          dfu-util \
-          device-tree-compiler \
-          wget \
-          python3-dev \
-          python3-pip \
-          python3-setuptools \
-          python3-tk \
-          python3-wheel \
-          python3-venv \
-          xz-utils \
-          file \
-          make \
-          gcc \
-          gcc-multilib \
-          g++-multilib \
-          libsdl2-dev \
-          libmagic1
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake ninja-build gperf dfu-util device-tree-compiler \
+            python3-pip python3-setuptools python3-wheel wget xz-utils file
+          pip3 install --upgrade west
 
-          python3 -m venv ~/.venv
-          source ~/.venv/bin/activate
-          
-          # 將 venv 路徑加入 CI 環境
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          pip3 install west ninja
-
-      - name: 🪁 Install Zephyr SDK
+      - name: 🪁 Install Zephyr SDK 0.17.2 (arm-zephyr-eabi)
         run: |
+          set -euxo pipefail
           wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.2/zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz
           tar xf zephyr-sdk-0.17.2_linux-x86_64_minimal.tar.xz -C ~/
           ~/zephyr-sdk-0.17.2/setup.sh -c -t arm-zephyr-eabi
 
-      - name: ♻️ Initialize Zephyr Workspace
+      - name: ♻️ Init Zephyr workspace from this CI repo (west)
         run: |
+          set -euxo pipefail
           cd zephyr-workspace
-          sudo rm -rf .west
           west init -l SlimeNRF-CI
           west update --narrow -o=--depth=1
           west zephyr-export
-
-      - name: 🐍 Install Python Dependencies
-        run: |
-          cd zephyr-workspace
           pip3 install -r zephyr/scripts/requirements.txt
 
-      - name: 🔧 Preparing Build Environment
+      - name: 📥 Ensure SlimeVR-Tracker-nRF exists
         run: |
+          set -euxo pipefail
           cd zephyr-workspace
-          sudo rm -rf Releases
-          mkdir Releases
+          if [ ! -d SlimeVR-Tracker-nRF ]; then
+            git clone --depth 1 https://github.com/SlimeVR/SlimeVR-Tracker-nRF.git SlimeVR-Tracker-nRF
+          fi
+          test -f SlimeVR-Tracker-nRF/CMakeLists.txt
 
-      # 4. 移除 Receiver Build Step
-
-      # 5. 保留與你目標設定相符的修改步驟 (移除 if)
-      #    - clk: "disabled"
-      #    - extraaction: "enabled"
-      #    - magnetometer: "enabled"
-      #    - sleep: "enabled"
-      #    - sw0: "disabled"
-
-      - name: 🔧 Disabling External Clock (clk: disabled)
+      - name: 🧽 Prepare output dir
         run: |
+          set -euxo pipefail
           cd zephyr-workspace
-          find='clk-gpios[ \t]='
+          rm -rf Releases
+          mkdir -p Releases
+
+      # === 固定的開關（照你要的那一組）===
+      # clk: disabled → 取消外部時鐘
+      - name: 🔧 Disable external clock (clk-gpios) + Kconfig
+        run: |
+          set -euxo pipefail
+          cd zephyr-workspace
+          find='clk-gpios[ \t]*='
           replace='// clk-gpios ='
-          sed -i "s|$find|$replace|g" SlimeNRF-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
-          sed -i "s|$find|$replace|g" SlimeNRF-Tracker-nRF/boards/xiao_ble.overlay
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
-          sed -i "s|$find|$replace|g" Stacked-SmolSlime/boards/nordic/promicro_uf2/promicro_uf2.dts
-          printf "\n\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\n\nCONFIG_USE_SENSOR_CLOCK=n" >> Stacked-SmolSlime/prj.conf
+          # 只動 ProMicro 的 DTS（其他板子不碰）
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts || true
+          printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      - name: 🔧 Enabling Extra Action (extraaction: enabled)
+      # sw0: disabled → 把 sw0 屬性註解掉
+      - name: 🔧 Disable SW0 button in DTS
         run: |
+          set -euxo pipefail
           cd zephyr-workspace
-          printf "\n\nCONFIG_USER_EXTRA_ACTIONS=y" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\n\nCONFIG_USER_EXTRA_ACTIONS=y" >> Stacked-SmolSlime/prj.conf
-
-      - name: 🔧 Enabling Magnetometer (magnetometer: enabled)
-        run: |
-          cd zephyr-workspace
-          printf "\n\nCONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\n\nCONFIG_SENSOR_USE_MAG=y" >> Stacked-SmolSlime/prj.conf
-
-      - name: 🔧 Enabling Sleep (sleep: enabled)
-        run: |
-          cd zephyr-workspace
-          printf "\n\nCONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\n\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\n\nCONFIG_USE_IMU_WAKE_UP=y" >> Stacked-SmolSlime/prj.conf
-          printf "\n\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> Stacked-SmolSlime/prj.conf
-
-      - name: 🔧 Disabling SW0 Button (sw0: disabled)
-        run: |
-          cd zephyr-workspace
-          find='sw0[ \t]='
+          find='sw0[ \t]*='
           replace='// sw0 ='
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble.overlay
-          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/xiao_ble_nrf52840_sense.overlay
-          sed -i "s|$find|$replace|g" Stacked-SmolSlime/boards/nordic/promicro_uf2/promicro_uf2.dts
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts || true
 
-      # 6. 移除其他所有 'Enabling/Disabling' 步驟
-
-      # 7. 保留 SlimeVR-Tracker-nRF build (非 Stacked)
-      - name: 🔨 Build SlimeNRF_Tracker_I2C_ProMicro
-        # if: (已移除, 因為已鎖定 type: tracker 且 filename 不含 Stacked)
+      # sleep: enabled、magnetometer: enabled、extraaction: enabled → Kconfig 附加
+      - name: 🔧 Enable sleep/magnetometer/extra actions (Kconfig)
         run: |
+          set -euxo pipefail
           cd zephyr-workspace
-          sudo rm -rf SlimeVR-Tracker-nRF/build
-          mkdir SlimeVR-Tracker-nRF/build
+          {
+            echo "CONFIG_USE_IMU_WAKE_UP=y"
+            echo "CONFIG_USE_ACTIVE_TIMEOUT=y"
+            echo "CONFIG_SENSOR_USE_MAG=y"
+            echo "CONFIG_USER_EXTRA_ACTIONS=y"
+          } >> SlimeVR-Tracker-nRF/prj.conf
 
-          # 8. 將 matrix 變數替換為你的固定值
+      - name: 🔨 Build SlimeVR-Tracker-nRF (ProMicro I2C)
+        run: |
+          set -euxo pipefail
+          cd zephyr-workspace
+          rm -rf SlimeVR-Tracker-nRF/build
+          mkdir -p SlimeVR-Tracker-nRF/build
+
           west build \
-              --board "promicro_uf2/nrf52840/i2c" \
-              --pristine=always SlimeVR-Tracker-nRF \
-              --build-dir SlimeVR-Tracker-nRF/build \
-              -- \
-              -DNCS_TOOLCHAIN_VERSION=NONE \
-              -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+            --board promicro_uf2/nrf52840/i2c \
+            --pristine=always SlimeVR-Tracker-nRF \
+            --build-dir SlimeVR-Tracker-nRF/build \
+            -- \
+            -DNCS_TOOLCHAIN_VERSION=NONE \
+            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
 
-          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
+          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 \
+             Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
 
-      # 9. 移除 Stacked-SmolSlime build 步驟
-
-      - name: 💾 Upload Artifact
-        # 8. 將 matrix 變數替換為你的固定值
+      - name: 📦 Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: SlimeNRF_Tracker_I2C_ProMicro.uf2
           path: zephyr-workspace/Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
 
-      - name: 📁 Create/Update Github Release
-        uses: mini-bomba/create-github-release@v1.2.0
+      - name: 🚀 Publish/Update 'latest' release (uses GITHUB_TOKEN)
+        uses: softprops/action-gh-release@v2
         with:
-          # 9. 使用 GITHUB_TOKEN (標準) 而非 gh_token (自訂)
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: "latest"
-          prerelease: false
+          tag_name: latest
           name: "Latest Firmware"
           body: |
-            Successful build of the latest SlimeNRF Firmware. (Automated)
-          
-          # 8. 將 matrix 變數替換為你的固定值
+            Manual single-target build:
+            - Board: promicro_uf2/nrf52840/i2c
+            - clk=disabled, sleep=enabled, sw0=disabled, magnetometer=enabled, extraaction=enabled
+            - File: SlimeNRF_Tracker_I2C_ProMicro.uf2
           files: |
             zephyr-workspace/Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
-          clear_attachments: false

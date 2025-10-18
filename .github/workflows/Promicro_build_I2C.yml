@@ -18,13 +18,15 @@ jobs:
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
 
-      # --- ピン設定---
+      # --- ピン設定（ここを直接編集）---
       SDA: "P0.06"
       SCL: "P0.08"
       PWM0: "P0.15"
       SW0:  "P1.00"
       LED:  "P0.15"
       CLK:  "P0.20"
+      INT:  "P0.17"
+      VCC:  "P0.31"
 
       # --- 機能スイッチ（enabled/disabled）---
       MAGNETOMETER: "enabled"
@@ -101,7 +103,6 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
-      # ===== 集中設定を DTS に適用：固定・可読・編集しやすい =====
       - name: Apply pin mapping to DTS
         shell: bash
         run: |
@@ -121,7 +122,6 @@ jobs:
             else
               echo "Invalid pin: $s" >&2; exit 1
             fi
-            # 常に10進数で解釈し、先頭の0を除去（08/09が8進数エラーになるのを防ぐ）
             pin=$((10#$pin))
             echo "$port $pin"
           }
@@ -132,46 +132,44 @@ jobs:
           read SW0_PORT  SW0_PIN  < <(parse_pin "${SW0}")
           read LED_PORT  LED_PIN  < <(parse_pin "${LED}")
           read CLK_PORT  CLK_PIN  < <(parse_pin "${CLK}")
+          read INT_PORT  INT_PIN  < <(parse_pin "${INT}")
+          read VCC_PORT  VCC_PIN  < <(parse_pin "${VCC}")
 
-          for P in SDA SCL PWM0 SW0 LED CLK; do
+          for P in SDA SCL PWM0 SW0 LED CLK INT VCC; do
             eval port=\$${P}_PORT pin=\$${P}_PIN
             if [[ $port -eq 1 && $pin -gt 15 ]]; then
               echo "$P: Port 1 supports only 0..15"; exit 1
             fi
           done
 
-          # I2C0（default/sleep）ブロックの psels を置換
+          # SLEEP
           sed -i -E \
             -e "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
             -e "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/     s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
             "$DTS"
 
-          # PWM0（default/sleep）ブロックの psels を置換
+          # PWM
           sed -i -E \
             -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
             "$DTS"
 
-          # SW0（buttons ノード）
+          # SW0
           sed -i -E \
             "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" \
             "$DTS"
 
-          # LED（zephyr,user ノード）— 置換文字列では \\& を使ってリテラルの & を出す
-          sed -i -E \
-            "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#" \
-            "$DTS"
-
-          # clk-gpios：もともとコメントアウトなら解除してから上書き、既存なら値だけ上書き
-          # （置換文字列の & もエスケープが必要）
+          # LED / CLK / INT / VCC
           sed -i -E \
             "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { \
-               s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
-               s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#; \
-             }" \
+              s#(led-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${LED_PORT} ${LED_PIN}#; \
+              s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <\\&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; \
+              s#(clk-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${CLK_PORT} ${CLK_PIN}#; \
+              s#(int0-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${INT_PORT} ${INT_PIN}#; \
+              s#(vcc-gpios[[:space:]]*=<)[[:space:]]*&gpio[01][[:space:]]+[0-9]+#\\1\\&gpio${VCC_PORT} ${VCC_PIN}#; \
+            }" \
             "$DTS"
 
-      # ===== 機能スイッチ：外部センサ用クロック =====
       - name: Enable External Sensor Clock
         if: env.SENSOR_CLOCK == 'enabled'
         run: |
@@ -190,7 +188,6 @@ jobs:
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 機能スイッチ：Extra Actions =====
       - name: Enable Extra Actions
         if: env.EXTRA_ACTIONS == 'enabled'
         run: |
@@ -203,7 +200,6 @@ jobs:
           cd zephyr-workspace
           printf "\nCONFIG_USER_EXTRA_ACTIONS=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 機能スイッチ：磁気センサ（Magnetometer） =====
       - name: Enable Magnetometer
         if: env.MAGNETOMETER == 'enabled'
         run: |
@@ -216,13 +212,12 @@ jobs:
           cd zephyr-workspace
           printf "\nCONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 機能スイッチ：スリープ =====
       - name: Enable Sleep
         if: env.SLEEP == 'enabled'
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
-          printf "\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
+          printf "\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-NRF/prj.conf
 
       - name: Disable Sleep
         if: env.SLEEP == 'disabled'
@@ -233,7 +228,6 @@ jobs:
           printf "\nCONFIG_SENSOR_LP_TIMEOUT=300000" >> SlimeVR-Tracker-nRF/prj.conf
           printf "\nCONFIG_SENSOR_USE_LOW_POWER_2=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # ===== 機能スイッチ：SW0 ボタン =====
       - name: Enable SW0 Button
         if: env.SW0_BUTTON == 'enabled'
         run: |
@@ -250,7 +244,6 @@ jobs:
           replace='// sw0 ='
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
 
-      # ===== ビルド =====
       - name: Build SlimeVR-Tracker-nRF (tracker only)
         run: |
           cd zephyr-workspace

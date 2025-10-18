@@ -129,13 +129,16 @@ jobs:
         run: |
           set -euo pipefail
           cd zephyr-workspace
+
           if [[ -z "${PINMAP_JSON:-}" ]]; then
             echo "No PIN JSON provided; skip overlay."
             exit 0
           fi
 
-          python3 - <<'PY'
+          # 先把 Python 程式寫成檔案，再執行，避免 YAML 對 here-doc 縮排敏感
+          cat > gen_overlay.py <<'PY'
 import os, json, re, sys
+
 pinmap = os.environ.get("PINMAP_JSON","").strip()
 try:
     data = json.loads(pinmap)
@@ -185,12 +188,12 @@ def emit_sw0(pin):
 
 def emit_led(pin):
     p,n = parse_pin(pin)
-    # 用路徑寫法避免 f-string 大括號混淆：直接重開 / 節點合併
-    out.append(f"/ {{ zephyr,usershadow: zephyr,user {{ led-gpios = <&gpio{p} {n} GPIO_OPEN_SOURCE>; }}; }};")
+    # 直接用根節點覆寫既有屬性，避免 &{/path} 的大括號轉義干擾
+    out.append(f"/ {{ zephyr,user {{ led-gpios = <&gpio{p} {n} GPIO_OPEN_SOURCE>; }}; }};")
 
 def emit_clk(pin):
     p,n = parse_pin(pin)
-    out.append(f"/ {{ zephyr,usershadow: zephyr,user {{ clk-gpios = <&gpio{p} {n} GPIO_OPEN_DRAIN>; }}; }};")
+    out.append(f"/ {{ zephyr,user {{ clk-gpios = <&gpio{p} {n} GPIO_OPEN_DRAIN>; }}; }};")
 
 if "i2c"  in data: emit_i2c(data["i2c"])
 if "pwm0" in data: emit_pwm("pwm0", data["pwm0"])
@@ -208,6 +211,8 @@ with open(overlay, "w") as f:
     f.write("/* Auto-generated from pinmap_json */\n" + "\n".join(out) + "\n")
 print("Wrote overlay:", overlay)
 PY
+
+          python3 gen_overlay.py
 
           if [ -f zephyr-workspace/SlimeVR-Tracker-nRF/promicro_pins.overlay ]; then
             echo "DTC_OVERLAY_FILE=$(pwd)/zephyr-workspace/SlimeVR-Tracker-nRF/promicro_pins.overlay" >> $GITHUB_ENV

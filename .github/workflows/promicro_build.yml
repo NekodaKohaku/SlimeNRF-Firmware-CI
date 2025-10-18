@@ -122,7 +122,7 @@ jobs:
           echo "app=$APP"     >> "$GITHUB_OUTPUT"
           echo "iface=$IFACE" >> "$GITHUB_OUTPUT"
 
-          # 為了避免後面 Markdown/summary 中用到 `||` 造成 YAML 解析炸裂
+          # 給 Markdown / summary 用的安全輸出（避免在 YAML/Markdown 中使用 ||）
           IFACE_PRINT="$IFACE"
           if [ -z "$IFACE_PRINT" ]; then IFACE_PRINT="n/a"; fi
           echo "iface_print=$IFACE_PRINT" >> "$GITHUB_OUTPUT"
@@ -187,7 +187,7 @@ jobs:
             echo "};"
           } > custom_overlay/custom.overlay
 
-          # 依介面追加 I2C 或 SPI3 的節點
+          # 依介面追加 I2C 或 SPI3 的節點（全用 echo，避免 YAML 對 & 的誤判）
           if [[ -z "$IFACE" || "$IFACE" == "i2c" ]]; then
             {
               echo "&i2c0 {"
@@ -230,51 +230,6 @@ jobs:
               echo "  };"
               echo "};"
             } >> custom_overlay/custom.overlay
-
-          if [[ -z "$IFACE" || "$IFACE" == "i2c" ]]; then
-            cat <<'EOF' >> custom_overlay/custom.overlay
-&i2c0 {
-  status = "okay";
-  pinctrl-0 = <&i2c0_default_custom>;
-  pinctrl-1 = <&i2c0_sleep_custom>;
-};
-&pinctrl {
-  i2c0_default_custom: i2c0_default_custom {
-    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, __SDA__)>, <NRF_PSEL(TWIM_SCL, 0, __SCL__)>; };
-  };
-  i2c0_sleep_custom: i2c0_sleep_custom {
-    group1 { psels = <NRF_PSEL(TWIM_SDA, 0, __SDA__)>, <NRF_PSEL(TWIM_SCL, 0, __SCL__)>; low-power-enable; };
-  };
-};
-EOF
-            sed -i "s/__SDA__/${SDA}/g; s/__SCL__/${SCL}/g" custom_overlay/custom.overlay
-          else
-            cat <<'EOF' >> custom_overlay/custom.overlay
-&spi3 {
-  status = "okay";
-  pinctrl-0 = <&spi3_default_custom>;
-  pinctrl-1 = <&spi3_sleep_custom>;
-  cs-gpios = <&gpio0 __CS__ GPIO_ACTIVE_LOW>;
-};
-&pinctrl {
-  spi3_default_custom: spi3_default_custom {
-    group1 {
-      psels = <NRF_PSEL(SPIM_MISO, 0, __MISO__)>,
-              <NRF_PSEL(SPIM_MOSI, 0, __MOSI__)>,
-              <NRF_PSEL(SPIM_SCK, 0, __SCK__)>;
-    };
-  };
-  spi3_sleep_custom: spi3_sleep_custom {
-    group1 {
-      psels = <NRF_PSEL(SPIM_MISO, 0, __MISO__)>,
-              <NRF_PSEL(SPIM_MOSI, 0, __MOSI__)>,
-              <NRF_PSEL(SPIM_SCK, 0, __SCK__)>;
-      low-power-enable;
-    };
-  };
-};
-EOF
-            sed -i "s/__MISO__/${MISO}/g; s/__MOSI__/${MOSI}/g; s/__SCK__/${SCK}/g; s/__CS__/${CS}/g" custom_overlay/custom.overlay
           fi
 
       - name: 🔨 Build

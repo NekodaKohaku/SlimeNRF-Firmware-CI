@@ -2,37 +2,6 @@ name: Build SlimeNRF Tracker (I2C)
 
 on:
   workflow_dispatch:
-    inputs:
-      magnetometer:
-        description: "Magnetometer"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      sleep:
-        description: "Sleep (IMU wake + active timeout)"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: disabled
-      sensor_clock:
-        description: "External Sensor Clock (clk-gpios)"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: enabled
-      extra_actions:
-        description: "User Extra Actions"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: disabled
-      sw0_button:
-        description: "SW0 Button"
-        required: true
-        type: choice
-        options: [enabled, disabled]
-        default: disabled
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,10 +13,28 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # ===== 這一段是「使用者可改」的集中設定 =====
     env:
+      # 固定板與檔名前綴
       BOARD_PREFIX: "promicro_uf2/nrf52840/"
       FILENAME_PREFIX: "SlimeNRF_Tracker_"
       FILEFORMAT: "uf2"
+
+      # --- Pin 設定（直接改這裡）---
+      SDA: "P0.06"
+      SCL: "P0.08"
+      PWM0: "P0.15"
+      SW0:  "P1.00"
+      LED:  "P0.15"
+      CLK:  "P0.20"   # 外接時鐘腳位（是否啟用由 SENSOR_CLOCK 控）
+
+      # --- 功能開關（enabled/disabled）---
+      MAGNETOMETER: "enabled"
+      SLEEP:        "disabled"
+      SENSOR_CLOCK: "enabled"
+      EXTRA_ACTIONS:"disabled"
+      SW0_BUTTON:   "disabled"
+    # ===== 集中設定結束 =====
 
     steps:
       - name: Acquire code (root)
@@ -117,61 +104,115 @@ jobs:
           ls -la zephyr-workspace
           test -d "zephyr-workspace/SlimeVR-Tracker-nRF" || (echo "SlimeVR-Tracker-nRF missing"; exit 1)
 
+      # ===== 套用「集中設定」到 DTS：固定、可讀、好改 =====
+      - name: Apply pin mapping to DTS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd zephyr-workspace
+          DTS="SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts"
+
+          parse_pin() {
+            local s="$1"
+            if [[ $s =~ ^P?([01])\.([0-9]{1,2})$ ]]; then
+              echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+            elif [[ $s =~ ^([0-9]{1,2})$ ]]; then
+              echo "0 ${BASH_REMATCH[1]}"
+            else
+              echo "Invalid pin: $s" >&2; exit 1
+            fi
+          }
+
+          read SDA_PORT SDA_PIN < <(parse_pin "${SDA}")
+          read SCL_PORT SCL_PIN < <(parse_pin "${SCL}")
+          read PWM0_PORT PWM0_PIN < <(parse_pin "${PWM0}")
+          read SW0_PORT  SW0_PIN  < <(parse_pin "${SW0}")
+          read LED_PORT  LED_PIN  < <(parse_pin "${LED}")
+          read CLK_PORT  CLK_PIN  < <(parse_pin "${CLK}")
+
+          for P in SDA SCL PWM0 SW0 LED CLK; do
+            eval port=\$${P}_PORT pin=\$${P}_PIN
+            if [[ $port -eq 1 && $pin -gt 15 ]]; then
+              echo "$P: Port 1 supports only 0..15"; exit 1
+            fi
+          done
+
+          # I2C0 default/sleep
+          sed -i -E \
+            -e "/^[[:space:]]*i2c0_default:[[:space:]]*i2c0_default[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
+            -e "/^[[:space:]]*i2c0_sleep:[[:space:]]*i2c0_sleep[[:space:]]*\\{/,/^[[:space:]]*\\};/     s#psels[[:space:]]*=.*#psels = <NRF_PSEL(TWIM_SDA, ${SDA_PORT}, ${SDA_PIN})>, <NRF_PSEL(TWIM_SCL, ${SCL_PORT}, ${SCL_PIN})>;#" \
+            "$DTS"
+
+          # PWM0 default/sleep
+          sed -i -E \
+            -e "/^[[:space:]]*pwm0_default:/,/^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            -e "/^[[:space:]]*pwm0_sleep:/,  /^[[:space:]]*\\};/ s#psels[[:space:]]*=.*#psels = <NRF_PSEL(PWM_OUT0, ${PWM0_PORT}, ${PWM0_PIN})>;#" \
+            "$DTS"
+
+          # SW0（buttons 節點）
+          sed -i -E "/^[[:space:]]*buttons[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(<&gpio)[01][[:space:]]+[0-9]+#\\1${SW0_PORT} ${SW0_PIN}#" "$DTS"
+
+          # LED（zephyr,user 節點）
+          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ s#(led-gpios[[:space:]]*=<)&gpio[01][[:space:]]+[0-9]+#\\1&gpio${LED_PORT} ${LED_PIN}#" "$DTS"
+
+          # clk-gpios：若原本註解，先解註再覆蓋；若存在就覆蓋數值（是否啟用由下一步控制）
+          sed -i -E "/^[[:space:]]*zephyr,user[[:space:]]*\\{/,/^[[:space:]]*\\};/ { s#//[[:space:]]*clk-gpios[[:space:]]*=.*#clk-gpios = <&gpio${CLK_PORT} ${CLK_PIN} GPIO_OPEN_DRAIN>;#; s#(clk-gpios[[:space:]]*=<)&gpio[01][[:space:]]+[0-9]+#\\1&gpio${CLK_PORT} ${CLK_PIN}#; }" "$DTS"
+
       # ===== 功能開關：外接時鐘 =====
       - name: Enable External Sensor Clock
-        if: ${{ inputs.sensor_clock == 'enabled' }}
+        if: env.SENSOR_CLOCK == 'enabled'
         run: |
           cd zephyr-workspace
-          find="\/\/\sclk-gpios"
-          replace="clk-gpios"
-          sed -i "s/$find/$replace/g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          find='\/\/[[:space:]]*clk-gpios'
+          replace='clk-gpios'
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           printf "\nCONFIG_USE_SENSOR_CLOCK=y" >> SlimeVR-Tracker-nRF/prj.conf
 
       - name: Disable External Sensor Clock
-        if: ${{ inputs.sensor_clock == 'disabled' }}
+        if: env.SENSOR_CLOCK == 'disabled'
         run: |
           cd zephyr-workspace
-          find='clk-gpios[ \t]='
+          find='clk-gpios[[:space:]]*='
           replace='// clk-gpios ='
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
           printf "\nCONFIG_USE_SENSOR_CLOCK=n" >> SlimeVR-Tracker-nRF/prj.conf
 
       # ===== 功能開關：Extra Actions =====
       - name: Enable Extra Actions
-        if: ${{ inputs.extra_actions == 'enabled' }}
+        if: env.EXTRA_ACTIONS == 'enabled'
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_USER_EXTRA_ACTIONS=y" >> SlimeVR-Tracker-nRF/prj.conf
 
       - name: Disable Extra Actions
-        if: ${{ inputs.extra_actions == 'disabled' }}
+        if: env.EXTRA_ACTIONS == 'disabled'
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_USER_EXTRA_ACTIONS=n" >> SlimeVR-Tracker-nRF/prj.conf
 
       # ===== 功能開關：磁力計 =====
       - name: Enable Magnetometer
-        if: ${{ inputs.magnetometer == 'enabled' }}
+        if: env.MAGNETOMETER == 'enabled'
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_SENSOR_USE_MAG=y" >> SlimeVR-Tracker-nRF/prj.conf
 
       - name: Disable Magnetometer
-        if: ${{ inputs.magnetometer == 'disabled' }}
+        if: env.MAGNETOMETER == 'disabled'
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
 
       # ===== 功能開關：睡眠 =====
       - name: Enable Sleep
-        if: ${{ inputs.sleep == 'enabled' }}
+        if: env.SLEEP == 'enabled'
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_USE_IMU_WAKE_UP=y" >> SlimeVR-Tracker-nRF/prj.conf
           printf "\nCONFIG_USE_ACTIVE_TIMEOUT=y" >> SlimeVR-Tracker-nRF/prj.conf
 
       - name: Disable Sleep
-        if: ${{ inputs.sleep == 'disabled' }}
+        if: env.SLEEP == 'disabled'
         run: |
           cd zephyr-workspace
           printf "\nCONFIG_USE_IMU_WAKE_UP=n" >> SlimeVR-Tracker-nRF/prj.conf
@@ -181,18 +222,18 @@ jobs:
 
       # ===== 功能開關：SW0 按鍵 =====
       - name: Enable SW0 Button
-        if: ${{ inputs.sw0_button == 'enabled' }}
+        if: env.SW0_BUTTON == 'enabled'
         run: |
           cd zephyr-workspace
-          find='\/\/\ssw0\s='
+          find='\/\/[[:space:]]*sw0[[:space:]]*='
           replace='sw0 ='
-          sed -i "s/$find/$replace/g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
+          sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
 
       - name: Disable SW0 Button
-        if: ${{ inputs.sw0_button == 'disabled' }}
+        if: env.SW0_BUTTON == 'disabled'
         run: |
           cd zephyr-workspace
-          find='sw0[ \t]='
+          find='sw0[[:space:]]*='
           replace='// sw0 ='
           sed -i "s|$find|$replace|g" SlimeVR-Tracker-nRF/boards/nordic/promicro_uf2/promicro_uf2.dts
 
@@ -239,9 +280,9 @@ jobs:
             Manual build of the SlimeNRF Tracker Firmware.
             Board: ${{ env.BOARD }} (Conn: I2C)
             Features:
-              MAG=${{ inputs.magnetometer }}, SLEEP=${{ inputs.sleep }},
-              CLOCK=${{ inputs.sensor_clock }}, EXTRA=${{ inputs.extra_actions }},
-              SW0=${{ inputs.sw0_button }}
+              MAG=${{ env.MAGNETOMETER }}, SLEEP=${{ env.SLEEP }},
+              CLOCK=${{ env.SENSOR_CLOCK }}, EXTRA=${{ env.EXTRA_ACTIONS }},
+              SW0=${{ env.SW0_BUTTON }}
           files: |
             zephyr-workspace/Releases/${{ env.OUTPUT_NAME }}.${{ env.FILEFORMAT }}
           clear_attachments: true

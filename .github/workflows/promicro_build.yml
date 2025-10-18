@@ -162,30 +162,26 @@ jobs:
           cd zephyr-workspace
           echo "CONFIG_SENSOR_USE_MAG=n" >> SlimeVR-Tracker-nRF/prj.conf
 
-      # 額外功能：沿用你之前習慣，固定開啟
-      - name: 🔧 Extra actions = enabled (fixed)
-        run: |
-          set -euxo pipefail
-          cd zephyr-workspace
-          echo "CONFIG_USER_EXTRA_ACTIONS=y" >> SlimeVR-Tracker-nRF/prj.conf
-
       - name: 🔨 Build SlimeVR-Tracker-nRF (ProMicro I2C)
         run: |
           set -euxo pipefail
           cd zephyr-workspace
-          rm -rf SlimeVR-Tracker-nRF/build
-          mkdir -p SlimeVR-Tracker-nRF/build
+          APP_DIR="$(pwd)/SlimeVR-Tracker-nRF"
+          BUILD_DIR="$APP_DIR/build"
+          OUT_DIR="$(pwd)/Releases"
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR" "$OUT_DIR"
 
           west build \
             --board promicro_uf2/nrf52840/i2c \
-            --pristine=always SlimeVR-Tracker-nRF \
-            --build-dir SlimeVR-Tracker-nRF/build \
+            --pristine=always "$APP_DIR" \
+            --build-dir "$BUILD_DIR" \
             -- \
             -DNCS_TOOLCHAIN_VERSION=NONE \
-            -DBOARD_ROOT=../SlimeVR-Tracker-nRF
+            -DBOARD_ROOT="$APP_DIR"
 
-          mv SlimeVR-Tracker-nRF/build/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2 \
-             Releases/SlimeNRF_Tracker_I2C_ProMicro.uf2
+          cp "$BUILD_DIR/SlimeVR-Tracker-nRF/zephyr/zephyr.uf2" \
+             "$OUT_DIR/SlimeNRF_Tracker_I2C_ProMicro.uf2"
 
       - name: 📦 Upload artifact
         uses: actions/upload-artifact@v4
